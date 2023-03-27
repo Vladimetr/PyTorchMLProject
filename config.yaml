@@ -3,7 +3,7 @@ n_classes: &n_classes 2
 model:
   cnn:
     n_classes: *n_classes
-    n_layers: 3
+    n_layers: &cnn_layers 3
     fdim: 256
 
 loss: 
@@ -16,6 +16,11 @@ test:
 preprocess: &preprocess
   sample_rate: 16000
   fdim: 256
+
+manager:
+  url: http://192.168.11.181:3500
+  hparams:
+    cnn_layers: *cnn_layers
 
 data:
   preprocess: *preprocess

@@ -27,23 +27,23 @@ import utils
 from metrics import init_loss
 from models import Model, model_init
 from metrics import Metrics
+from manager import MLFlowTrainManager
 # from test import test_step
 
 
 EXPERIMENTS_DIR = 'dev/experiments'
+manager = None
 
 
-def get_new_run_dir(runs_dir:str) -> str:
-    try:
-        existed_runs = os.listdir(runs_dir)
-    except FileNotFoundError:
-        existed_runs = []
+def get_new_run_name(runs_dir:str) -> str:
+    existed_runs = list(filter(lambda x: x.startswith('train-'),
+                                os.listdir(runs_dir)))
     max_id = 0
     if existed_runs:
-        max_id = max([int(run_name) for run_name in existed_runs])
-    new_run_name = '{:03d}'.format(max_id + 1)
-    new_run_dir = osp.join(runs_dir, new_run_name)
-    return new_run_dir
+        max_id = max([int(run_name[6:9]) \
+                      for run_name in existed_runs])
+    new_run_name = 'train-{:03d}'.format(max_id + 1)
+    return new_run_name
 
 
 def get_better_metrics(metrics1:dict, metrics2:dict) -> dict:
@@ -56,6 +56,22 @@ def get_better_metrics(metrics1:dict, metrics2:dict) -> dict:
     if metrics1["loss"] < metrics2["loss2"]:
         return metrics1
     return metrics2
+
+
+def status_handler(func):
+    def run_train(*args, **kwargs):
+        try:
+            func(*args, **kwargs)
+        except (Exception, KeyboardInterrupt) as error:
+            # train is failed
+            if manager is not None:
+                manager.set_status("FAILED")
+            raise error
+        else:
+            # train is successfull
+            if manager is not None:
+                manager.set_status("FINISHED")
+    return run_train
 
 
 def train_step(
@@ -123,6 +139,7 @@ def log_metrics(metrics:dict, epoch:int, step:int, logger,
         tb_writer.add_scalar('Loss', metrics["loss"], step)
 
 
+@status_handler
 def main(train_data:str,
          test_data:str,
          config:Union[str, dict]='config.yaml',
@@ -151,6 +168,7 @@ def main(train_data:str,
                         if None, all Test Set
     :param debug_mode: if True, without save model, summary and logs
     """
+    global manager
     if isinstance(config, str):
         # load config from yaml
         config_yaml = config
@@ -160,15 +178,26 @@ def main(train_data:str,
     train_params = config["train"]
     test_params = config["test"]
     data_params = config["data"]
+    manager_params = config["manager"]
     train_logfile, test_logfile = None, None
 
-    # Create experiment run dir
+    # Create experiment
     if not debug:
-        runs_dir = os.path.join(EXPERIMENTS_DIR, experiment)
-        run_dir = get_new_run_dir(runs_dir)
+        runs_dir = os.path.join(EXPERIMENTS_DIR, 
+                                experiment.replace(' ', '_'))
+        run_name = get_new_run_name(runs_dir)
         if comment:
-            run_dir += '_' + comment
+            run_name += '_' + comment
+        # Init manager
+        manager = MLFlowTrainManager(
+            url=manager_params["url"],
+            experiment=experiment,
+            run_name=run_name
+        )
+        manager.log_hyperparams(manager_params["hparams"])
+        manager.log_config("config.yaml")
         # init dirs
+        run_dir = osp.join(runs_dir, run_name)
         os.makedirs(run_dir)
         os.makedirs(osp.join(run_dir, 'weights/'))
         # copy config
@@ -309,10 +338,17 @@ def main(train_data:str,
 
         test_metrics_computer.reset_summary()
 
-        # ---- END OF EPOCH
+            # ---- END OF EPOCH
+    # except (KeyboardInterrupt, Exception) as error:
+    #     if not debug:
+    #         manager.set_status("FAILED")
+    #     raise error
 
-    if not writer_train: writer_train.close()
-    if not writer_test:  writer_test.close()
+    if not debug:
+        manager.set_status("FINISHED")
+        if tensorboard:
+            writer_train.close()
+            writer_test.close()
 
 
 
