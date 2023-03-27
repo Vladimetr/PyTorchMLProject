@@ -17,9 +17,9 @@ def config_from_yaml(yaml_path:str) -> dict:
     config = OrderedDict(config)
     return config
 
-def config2yaml(config:dict, yaml_path:str):
+def dict2yaml(data:dict, yaml_path:str):
     with open(yaml_path, 'w') as f:
-        f.write(config)
+        f.write(oyaml.dump(data))
 
 
 class ModelParamsHandler:

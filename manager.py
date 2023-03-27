@@ -43,8 +43,11 @@ class MLFlowTrainManager(BaseManager):
     def log_summary_metrics(self, metrics:dict):
         mlflow.log_metrics(metrics, step=self.max_epoch + 1)
     
-    def log_config(self, yaml_path:str, subdir:str=None):
-        mlflow.log_artifact("config.yaml", subdir)
+    def log_dict(self, data:dict, fpath:str):
+        mlflow.log_dict(data, fpath)
+
+    def log_file(self, fpath:str, subdir:str=None):
+        mlflow.log_artifact(fpath, subdir)
 
     def set_status(self, status:str):
         """

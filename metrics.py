@@ -40,8 +40,8 @@ def init_loss(name:str, params:dict, device='cpu') -> Loss:
 
 
 
-class Metrics:
-    def __init__(self, n_classes:int, compute_metrics:list):
+class BinClassificationMetrics:
+    def __init__(self, compute_metrics:list):
         """
         n_classes (int): number of classes C
         compute_metrics (list[str]): order of metrics to compute
@@ -57,45 +57,73 @@ class Metrics:
         self.reset_summary()
 
     @staticmethod
-    def tp(pred:torch.Tensor, target:torch.Tensor) -> float:
+    def tp(pred:torch.Tensor, targ:torch.Tensor) -> float:
         """
         True positive
+        Args:
+            pred (B, ): indexes of pred classes
+            targ (B, ): indexes of targ classes
+        Returns:
+            int: true positive
         """
-        return 0.7
+        tp = torch.sum(pred == targ == 1).item()
+        return tp
     
     @staticmethod
-    def tn(pred:torch.Tensor, target:torch.Tensor) -> float:
+    def tn(pred:torch.Tensor, targ:torch.Tensor) -> float:
         """
         True negative
+        Args:
+            pred (B, ): indexes of pred classes
+            targ (B, ): indexes of targ classes
+        Returns:
+            int: true negative
         """
-        return 0.6
+        tn = torch.sum(pred == targ == 0).item()
+        return tn
     
     @staticmethod
-    def fp(pred:torch.Tensor, target:torch.Tensor) -> float:
+    def fp(pred:torch.Tensor, targ:torch.Tensor) -> float:
         """
         False positive
+        Args:
+            pred (B, ): indexes of pred classes
+            targ (B, ): indexes of targ classes
+        Returns:
+            int: false positive
         """
-        return 0.2
+        fp = torch.sum(torch.logical_and(pred == 1, targ == 0)).item()
+        return fp
     
     @staticmethod
-    def fn(pred:torch.Tensor, target:torch.Tensor) -> float:
+    def fn(pred:torch.Tensor, targ:torch.Tensor) -> float:
         """
-        False negative
+        False positive
+        Args:
+            pred (B, ): indexes of pred classes
+            targ (B, ): indexes of targ classes
+        Returns:
+            int: false negative
         """
-        return 0.1
+        fn = torch.sum(torch.logical_and(pred == 0, targ == 1)).item()
+        return fn
 
     def compute(self, probs:torch.Tensor, targ:torch.Tensor,
                 accumulate=False) -> dict:
         """
         B - batch size
-        C - n classes
+        C - n classes = 2
         Args:
             probs (B, C): probs for each class
-            targ (B, )): index of target class
+            targ (B, C)): one-hot of target class
         Returns:
             dict: dict with metrics
         """
-        pred = torch.max(probs, dim=1)  # (B, )
+        # class indexes with max prob
+        pred = torch.max(probs, dim=1)[1]  # (B, )
+        # one-hot to indexes
+        targ = torch.argmax(targ, dim=1)  # (B, )
+
         metrics = OrderedDict()
         for name in self.compute_metrics:
             try:
@@ -107,7 +135,7 @@ class Metrics:
         return metrics
     
     def add_summary(self, metrics:dict):
-        for k, v in metrics:
+        for k, v in metrics.items():
             try:
                 self.sum_metrics[k].append(v)
             except KeyError:
