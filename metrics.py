@@ -30,6 +30,7 @@ class Loss(metaclass=ABCMeta):
 
 def init_loss(name:str, params:dict, device='cpu') -> Loss:
     if name == 'cross_entropy':
+        params = dict(params)  # copy
         params["pos_weight"] = torch.tensor(params["pos_weight"])
         loss = torch.nn.BCEWithLogitsLoss(**params).to(device)
         

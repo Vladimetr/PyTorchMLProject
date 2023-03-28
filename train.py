@@ -31,6 +31,7 @@ from manager import MLFlowManager
 from test import test_step
 
 EXPERIMENTS_DIR = 'dev/experiments'
+TB_LOGS_DIR = 'dev/tensorboard/logs'
 manager = None
 
 
@@ -69,6 +70,18 @@ def status_handler(func):
             if manager is not None:
                 manager.set_status("FINISHED")
     return run_train
+
+
+def create_tb_writer(experiment:str, run_name:str, 
+                     mode:str) -> SummaryWriter:
+    """
+    mode (str): 'train', 'test'
+    """
+    log_dir = osp.join(TB_LOGS_DIR, experiment, mode, run_name)
+    if not osp.exists(log_dir):
+        os.makedirs(log_dir)
+    writer = SummaryWriter(log_dir=log_dir)
+    return writer
 
 
 def train_step(
@@ -121,7 +134,8 @@ def train_step(
     return metrics
 
 
-def log_metrics(metrics:dict, epoch:int, step:int, logger,
+def log_metrics(metrics:dict, epoch:int, step:int, 
+                global_step:int, logger,
                 tb_writer:SummaryWriter=None):
 
     # log metrics to .csv
@@ -132,8 +146,8 @@ def log_metrics(metrics:dict, epoch:int, step:int, logger,
     if tb_writer:
         for metric_name, value in metrics.items():
             tb_writer.add_scalar(metric_name, 
-                                 value, step)
-        tb_writer.add_scalar('Loss', metrics["loss"], step)
+                                 value, global_step)
+        tb_writer.add_scalar('Loss', metrics["loss"], global_step)
 
 
 @status_handler
@@ -144,6 +158,7 @@ def main(train_data:str,
          batch_size:int=500,
          experiment:str='experiment',
          debug:bool=True,
+         use_manager:bool=True,
          tensorboard:bool=False,
          data_shuffle:bool=True,
          log_step:int=1,
@@ -164,13 +179,14 @@ def main(train_data:str,
                         if None, all Test Set
     :param debug_mode: if True, without save model, summary and logs
     """
+    experiment = experiment.replace(' ', '_')
     global manager
+
+    # Load config
     if isinstance(config, str):
         # load config from yaml
         config_yaml = config
         config = utils.config_from_yaml(config_yaml)
-    else:
-        raise NotImplementedError("Config dict is not implemented yet")
     train_params = config["train"]
     test_params = config["test"]
     data_params = config["data"]
@@ -180,21 +196,13 @@ def main(train_data:str,
     # Create experiment
     if not debug:
         runs_dir = os.path.join(EXPERIMENTS_DIR,
-                                experiment.replace(' ', '_'),
+                                experiment,
                                 'train')
         if not osp.exists(runs_dir):
             os.makedirs(runs_dir)
         run_name = '{:03d}'.format(get_new_run_id(runs_dir))
         if comment:
             run_name += '_' + comment
-        # Init manager
-        manager = MLFlowManager(
-            url=manager_params["url"],
-            experiment=experiment,
-            run_name='train-' + run_name
-        )
-        manager.log_hyperparams(manager_params["hparams"])
-        manager.log_config("config.yaml")
         # init dirs
         run_dir = osp.join(runs_dir, run_name)
         os.makedirs(run_dir)
@@ -206,15 +214,30 @@ def main(train_data:str,
             "train_data": train_data,
             "test_data": test_data,
             "batch_size": batch_size,
-            "epochs": epochs,
 
         }
         utils.dict2yaml(metadata, osp.join(run_dir, 'meta.yaml'))
-        manager.log_config(metadata, 'meta.yaml')
-        # init files for log metrics
-        train_logfile = osp.join(run_dir, 'train.log')
-        test_logfile = osp.join(run_dir, 'test.log')
+        # init files for log metrics (in csv format)
+        train_logfile = osp.join(run_dir, 'train.csv')
+        test_logfile = osp.join(run_dir, 'test.csv')
         print(f"Experiment storage: '{run_dir}'")
+
+        # Init manager
+        if use_manager:
+            tags = {
+                'mode': 'train',
+                'epochs': str(epochs),
+            }
+            manager = MLFlowManager(
+                url=manager_params["url"],
+                experiment=experiment,
+                run_name='train-' + run_name,
+                tags=tags
+            )
+            manager.log_hyperparams(manager_params["hparams"])
+            manager.log_config(config_yaml)
+            manager.log_config(metadata, 'meta.yaml')
+            print(f"Manager experiment run name: {'train-' + run_name}")
 
     # Files for logging metrics
     train_logger = utils.get_logger('train', train_logfile)
@@ -256,11 +279,8 @@ def main(train_data:str,
 
     # Tensorboard writer
     if not debug and tensorboard:
-        log_dir = osp.join(run_dir, 'tb_logs')
-        os.makedirs(log_dir)
-        writer_train = SummaryWriter(log_dir=os.path.join(log_dir, 'train'))
-        writer_test = SummaryWriter(log_dir=os.path.join(log_dir, 'test'))
-        print(f"Tensorboard logs: '{log_dir}'")
+        writer_train = create_tb_writer(experiment, run_name, 'train')
+        writer_test = create_tb_writer(experiment, run_name, 'test')
     else:
         writer_test = writer_train = None
 
@@ -286,13 +306,17 @@ def main(train_data:str,
     test_logger.info(title)
 
     best_metrics = {
-        'TP': 154,
-        'FN': 30,
-        'FN': 20,
-        'TN': 101,
+        'TP': 0,
+        'FN': 1,
+        'FN': 1,
+        'TN': 0,
     }
+    best_weights_path = osp.join(run_dir, f"weights/best.pt")
+    train_iter = test_iter = 0
     for ep in range(1, epochs + 1):
         print(f"\n{ep}/{epochs} Epoch...")
+        if manager:
+            manager.add_tags({'current_epoch': ep})
 
         model.train()
         train_set.shuffle(ep)
@@ -307,8 +331,10 @@ def main(train_data:str,
             )
             if i % log_step == 0:
                 log_metrics(metrics, epoch=ep, step=i, 
+                            global_step=train_iter,
                             logger=train_logger,
                             tb_writer=writer_train)
+            train_iter += 1
                 
         # Saving
         if not debug:
@@ -323,14 +349,13 @@ def main(train_data:str,
                 model=model,
                 batch=batch,
                 loss=loss,
-                metrics_computer=test_metrics_computer,
-                step=i,
-                tb_writer=writer_test,
-                log_step=log_step)
-            
+                metrics_computer=test_metrics_computer
+            )
             log_metrics(metrics, epoch=ep, step=i, 
+                        global_step=test_iter,
                         logger=test_logger,
                         tb_writer=writer_test)
+            test_iter += 1
             
         print("Average metrics:")
         metrics = test_metrics_computer.summary()
@@ -347,9 +372,8 @@ def main(train_data:str,
             print('New best results')
             # save best weights
             if not debug:
-                weights_path = osp.join(run_dir, f"weights/weights.pt")
-                model.save(weights_path)
-                print(f"Weights save: '{weights_path}'")
+                model.save(best_weights_path)
+                print(f"Weights save: '{best_weights_path}'")
 
         test_metrics_computer.reset_summary()
 
@@ -360,9 +384,13 @@ def main(train_data:str,
         print(f"{k}: {v}")
     if manager:
         manager.log_summary_metrics(best_metrics)
+        config["model"][model_name]["weights"] = best_weights_path
+        utils.dict2yaml(config, osp.join(run_dir, 'config.yaml'))
+        manager.log_config(osp.join(run_dir, 'config.yaml'))
 
     if not debug:
-        manager.set_status("FINISHED")
+        if manager:
+            manager.set_status("FINISHED")
         if tensorboard:
             writer_train.close()
             writer_test.close()
@@ -371,6 +399,9 @@ def main(train_data:str,
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='train CNN')
+    parser.add_argument('--config', '-cfg', type=str, 
+                        default='config.yaml', 
+                        help='path/to/config.yaml')
     parser.add_argument('--train-data', type=str, 
                         default='data/train_manifest.csv')
     parser.add_argument('--test-data', type=str, 
@@ -378,11 +409,19 @@ if __name__ == '__main__':
     parser.add_argument('--batch-size', '-bs', type=int, 
                         default=100)
     parser.add_argument('--epochs', '-e', type=int, default=10)
-    parser.add_argument('--debug', '-d', action='store_true', default=False, 
+    parser.add_argument('--debug', '-d', action='store_true', 
+                        default=False, 
                         help='no save results')
-    parser.add_argument('--experiment', '-exp', default='experiment', 
+    parser.add_argument('--experiment', '-exp', type=None, 
+                        default='experiment', 
                         help='Name of existed MLFlow experiment')
-    parser.add_argument('--comment', '-c', type=str, default=None, 
+    parser.add_argument('--manager', '-mng', action='store_true', 
+                        dest='use_manager', default=False, 
+                        help='whether to use ML experiment manager')
+    parser.add_argument('--tensorboard', '-tb', action='store_true', 
+                        default=False, 
+                        help='whether to use Tensorboard')
+    parser.add_argument('--comment', '-m', type=str, default=None, 
                         help='Postfix for experiment run name')
     parser.add_argument('--log-step', '-ls', type=int, default=1, 
                         help='interval of log metrics')

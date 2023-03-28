@@ -30,7 +30,7 @@ class BaseManager:
 
 class MLFlowManager(BaseManager):
     def __init__(self, url:str, experiment='noname', 
-                run_name:str="noname"):
+                run_name:str="noname", tags:dict={}):
         """
         url (str): For ex. 'http://192.168.11.181:3500'
         id (int): number of experiment run (Train-001)
@@ -49,7 +49,7 @@ class MLFlowManager(BaseManager):
             experiment_id=self.exp_id, 
             run_id=run_id, 
             run_name=run_name, 
-            tags={'mode': 'train'}, 
+            tags=tags, 
             description="my example"
         )
         self.run_id = run.info.run_id
@@ -75,8 +75,13 @@ class MLFlowManager(BaseManager):
         if isinstance(config, dict):
             self.log_dict(config, name)
         else:
-            self.log_file(config, name)
+            self.log_file(config)
 
+    def add_tags(self, tags:dict):
+        """
+        If tag name already exists, it will be rewritten
+        """
+        mlflow.set_tags(tags)
 
     def set_status(self, status:str):
         """
@@ -97,8 +102,19 @@ class MLFlowManager(BaseManager):
 
 if __name__ == '__main__':
     url = 'http://192.168.11.181:3500'
-    experiment = 'Example'
-    id = 1
-    manager = MLFlowManager(url, experiment, id)
+    experiment = 'experiment'
+    run_name = 'train-debug'
+    manager = MLFlowManager(url, experiment, run_name)
 
     manager.log_config('config.yaml')
+    tags = {
+        "current_epoch": '1'
+    }
+    manager.add_tags(tags)
+
+    # ...
+
+    tags = {
+        "current_epoch": 2
+    }
+    manager.add_tags(tags)
