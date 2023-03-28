@@ -12,23 +12,20 @@
 Добавить add_hparams в TensorBoard в конце тестирования. Лучшие результаты метрик по всем эпохам сохранять в hparams-metrics.
 Тогда при запуске ТБ будут отображены таблица со всеми гиперпараметрами. Через фильтр Runs можно сравнивать только кривые тестов, оценивать лучшую кривую и сразу же через таблицы находить значения гиперпараметров.
 """
-import torch
 import os
 import os.path as osp
-from shutil import copyfile
 from typing import Union
 from math import isnan as math_isnan
-from data import CudaDataLoader, BucketingSampler, MyDataset
+import argparse
+import torch
 from torch.utils.tensorboard import SummaryWriter
 from torch.nn.utils import clip_grad_norm_
-import argparse
-import logging
-import utils
-from metrics import init_loss
-from models import Model, model_init
-from metrics import BinClassificationMetrics
-from manager import MLFlowManager
-from test import test_step
+from .data import CudaDataLoader, BucketingSampler, MyDataset
+from . import utils
+from .metrics import init_loss, BinClassificationMetrics
+from .models import Model, model_init
+from .manager import MLFlowManager
+from .test import test_step
 
 EXPERIMENTS_DIR = 'dev/experiments'
 TB_LOGS_DIR = 'dev/tensorboard/logs'

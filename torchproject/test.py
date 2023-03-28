@@ -6,21 +6,21 @@
 import torch
 import os
 import os.path as osp
-from data import CudaDataLoader, BucketingSampler, MyDataset
-from torch.utils.tensorboard import SummaryWriter
-import logging
-import argparse
-from models import Model
 from math import isnan
 from typing import Union
-import utils
-from manager import MLFlowManager, BaseManager
-from models import model_init
-from metrics import init_loss, BinClassificationMetrics
+import argparse
+from torch.utils.tensorboard import SummaryWriter
+from .models import Model
+from .data import CudaDataLoader, BucketingSampler, MyDataset
+from . import utils
+from .manager import MLFlowManager, BaseManager
+from .models import model_init
+from .metrics import init_loss, BinClassificationMetrics
 
 EXPERIMENTS_DIR = 'dev/experiments'
 TB_LOGS_DIR = 'dev/tensorboard/logs'
 manager = None
+
 
 class ConfigError(Exception):
     pass
@@ -32,6 +32,7 @@ def get_new_run_id(runs_dir:str) -> int:
         max_id = max([int(run_name[:3]) \
                       for run_name in existed_runs])
     return max_id + 1
+
 
 def log_metrics(metrics:dict, step:int, logger,
                 manager:BaseManager=None,
