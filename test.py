@@ -14,12 +14,16 @@ from models import Model
 from math import isnan
 from typing import Union
 import utils
-from manager import MLFlowManager
+from manager import MLFlowManager, BaseManager
 from models import model_init
 from metrics import init_loss, BinClassificationMetrics
 
 EXPERIMENTS_DIR = 'dev/experiments'
+TB_LOGS_DIR = 'dev/tensorboard/logs'
+manager = None
 
+class ConfigError(Exception):
+    pass
 
 def get_new_run_id(runs_dir:str) -> int:
     existed_runs = os.listdir(runs_dir)
@@ -30,18 +34,41 @@ def get_new_run_id(runs_dir:str) -> int:
     return max_id + 1
 
 def log_metrics(metrics:dict, step:int, logger,
+                manager:BaseManager=None,
                 tb_writer:SummaryWriter=None):
 
     # log metrics to .csv
     log_line = [str(v) for _, v in metrics.items()]
     logger.info(' '.join(log_line))
 
+    # Manager
+    if manager:
+        manager.log_step_metrics(metrics, step)
+
     # Tensorboard
     if tb_writer:
         for metric_name, value in metrics.items():
-            tb_writer.add_scalar(metric_name, 
-                                 value, step)
-        tb_writer.add_scalar('Loss', metrics["loss"], step)
+            if metric_name == 'loss':
+                tb_writer.add_scalar('Loss/CrossEntropy', value, 
+                                     step)
+            else:
+                tb_writer.add_scalar('Metrics/' + metric_name, 
+                                     value, step)
+
+def status_handler(func):
+    def run_train(*args, **kwargs):
+        try:
+            func(*args, **kwargs)
+        except (Exception, KeyboardInterrupt) as error:
+            # train is failed
+            if manager is not None:
+                manager.set_status("FAILED")
+            raise error
+        else:
+            # train is successfull
+            if manager is not None:
+                manager.set_status("FINISHED")
+    return run_train
 
 
 def test_step(
@@ -49,9 +76,6 @@ def test_step(
         batch:tuple,
         loss,
         metrics_computer:BinClassificationMetrics,
-        step:int,
-        tb_writer=None,
-        log_step:int=1,
         ) -> dict:
     x, target = batch
     with torch.no_grad():
@@ -73,21 +97,15 @@ def test_step(
     metrics_ = metrics_computer.compute(probs, target,
                                        accumulate=True)
     metrics.update(metrics_)
-
-    # Tensorboard
-    if tb_writer and step % log_step == 0:
-        for metric_name, value in metrics.items():
-            tb_writer.add_scalar(metric_name, 
-                                 value, step)
-        tb_writer.add_scalar('Loss', loss_value, step)
-    
     return metrics
 
 
+@status_handler
 def main(data:str,
          config:Union[str, dict]='config.yaml',
          batch_size:int=500,
          experiment:str='experiment',
+         use_manager:bool=True,
          tensorboard:bool=False,
          data_shuffle:bool=True,
          log_step:int=1,
@@ -106,6 +124,7 @@ def main(data:str,
                         if None, all Test Set
     :param debug_mode: if True, without save model, summary and logs
     """
+    global manager
     if isinstance(config, str):
         # load config from yaml
         config = utils.config_from_yaml(config)
@@ -123,14 +142,6 @@ def main(data:str,
     run_name = '{:03d}'.format(get_new_run_id(runs_dir))
     if comment:
         run_name += '_' + comment
-    # Init manager
-    manager = MLFlowManager(
-        url=manager_params["url"],
-        experiment=experiment,
-        run_name='test-' + run_name
-    )
-    manager.log_hyperparams(manager_params["hparams"])
-    manager.log_file("config.yaml")
     # init dirs
     run_dir = osp.join(runs_dir, run_name)
     os.makedirs(run_dir)
@@ -144,12 +155,23 @@ def main(data:str,
 
     }
     utils.dict2yaml(metadata, osp.join(run_dir, 'meta.yaml'))
-    manager.log_dict(metadata, 'meta.yaml')
     # init files for log metrics
-    test_logfile = osp.join(run_dir, 'test.log')
+    test_logfile = osp.join(run_dir, 'test.csv')
+    test_logger = utils.get_logger('test', test_logfile)
     print(f"Experiment storage: '{run_dir}'")
 
-    test_logger = utils.get_logger('test', test_logfile)
+    # Init manager
+    if use_manager:
+        manager = MLFlowManager(
+            url=manager_params["url"],
+            experiment=experiment,
+            run_name='test-' + run_name,
+            tags={'mode': 'test'}
+        )
+        manager.log_hyperparams(manager_params["hparams"])
+        manager.log_file("config.yaml")
+        manager.log_dict(metadata, 'meta.yaml')
+        print(f"Manager experiment run name: {'test-' + run_name}")
 
     # Load test data
     test_set = MyDataset(data, params=data_params)
@@ -161,6 +183,8 @@ def main(data:str,
     # Define model
     model_name = test_params["model"]
     model_params = config["model"][model_name]
+    if not model_params["weights"]:
+        raise ConfigError("Weights are not defined")
     model = model_init(model_name,
                        model_params,
                        train=True,
@@ -168,9 +192,10 @@ def main(data:str,
 
     # Tensorboard writer
     if tensorboard:
-        log_dir = osp.join(run_dir, 'tb_logs')
-        os.makedirs(log_dir)
-        writer = SummaryWriter(log_dir=os.path.join(log_dir, 'test'))
+        log_dir = osp.join(TB_LOGS_DIR, experiment, 'test', run_name)
+        if not osp.exists(log_dir):
+            os.makedirs(log_dir)
+        writer = SummaryWriter(log_dir=log_dir)
         print(f"Tensorboard logs: '{log_dir}'")
     else:
         writer = None
@@ -194,20 +219,20 @@ def main(data:str,
             model,
             batch,
             loss,
-            metrics_computer,
-            step,
-            writer,
-            log_step
+            metrics_computer
         )
         if step % log_step == 0:
             log_metrics(metrics, step=step, 
                         logger=test_logger,
+                        manager=manager,
                         tb_writer=writer)
 
     avg_metrics = metrics_computer.summary()
     print("--- Average metrics ---")
     for k, v in avg_metrics.items():
         print(f"{k}: {v}")
+    if manager:
+       manager.log_summary_metrics(avg_metrics)
 
     if writer: writer.close()
 
@@ -215,15 +240,23 @@ def main(data:str,
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Test lang classificator')
+    parser.add_argument('--config', '-cfg', type=str, default='config.yaml', 
+                        help='path/to/config.yaml')
     parser.add_argument('--data', '-d', type=str, 
                         default='data/test_manifest.csv',
                         help='path/to/data')
     parser.add_argument('--batch_size', '-bs', type=int, default=20)
     parser.add_argument('--experiment', '-exp', default='experiment', 
                     help='Name of existed MLFlow experiment')
+    parser.add_argument('--manager', '-mng', action='store_true', 
+                        dest='use_manager', default=False, 
+                        help='whether to use ML experiment manager')
+    parser.add_argument('--tensorboard', '-tb', action='store_true', 
+                        default=False, 
+                        help='whether to use Tensorboard')
     parser.add_argument('--log-step', '-ls', type=int, default=1, 
                         help='interval of log metrics')
-    parser.add_argument('--comment', '-c', type=str, default=None, 
+    parser.add_argument('--comment', '-m', type=str, default=None, 
                     help='Postfix for experiment run name')
     args = parser.parse_args()
     # Namespace to dict

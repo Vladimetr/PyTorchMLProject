@@ -73,11 +73,13 @@ def status_handler(func):
 
 
 def create_tb_writer(experiment:str, run_name:str, 
-                     mode:str) -> SummaryWriter:
+                     subdir:str=None) -> SummaryWriter:
     """
     mode (str): 'train', 'test'
     """
-    log_dir = osp.join(TB_LOGS_DIR, experiment, mode, run_name)
+    log_dir = osp.join(TB_LOGS_DIR, experiment, 'train', run_name)
+    if subdir:
+        log_dir += '/' + subdir
     if not osp.exists(log_dir):
         os.makedirs(log_dir)
     writer = SummaryWriter(log_dir=log_dir)
@@ -145,11 +147,13 @@ def log_metrics(metrics:dict, epoch:int, step:int,
     # Tensorboard
     if tb_writer:
         for metric_name, value in metrics.items():
-            tb_writer.add_scalar(metric_name, 
-                                 value, global_step)
-        tb_writer.add_scalar('Loss', metrics["loss"], global_step)
-
-
+            if metric_name == 'loss':
+                tb_writer.add_scalar('Loss/CrossEntropy', value, 
+                                     global_step)
+            else:
+                tb_writer.add_scalar('Metrics/' + metric_name, 
+                                     value, global_step)
+            
 @status_handler
 def main(train_data:str,
          test_data:str,
@@ -279,8 +283,8 @@ def main(train_data:str,
 
     # Tensorboard writer
     if not debug and tensorboard:
-        writer_train = create_tb_writer(experiment, run_name, 'train')
-        writer_test = create_tb_writer(experiment, run_name, 'test')
+        writer_train = create_tb_writer(experiment, run_name)
+        writer_test = create_tb_writer(experiment, run_name, 'subtest')
     else:
         writer_test = writer_train = None
 
