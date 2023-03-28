@@ -1,12 +1,34 @@
 import mlflow
+from typing import Union
 
 
 class BaseManager:
-    def __init__(self) -> None:
+    def __init__(self):
+        pass
+
+    def log_step_metrics(self, metrics:dict, step:int):
+        """
+        Log step metrics for plot
+        """
+        pass
+
+    def log_hyperparams(self, hparams:dict):
+        pass
+
+    def log_summary_metrics(self, metrics:dict):
+        """
+        Log average or best metrics
+        """
+        pass
+
+    def log_config(self, config:Union[dict, str], name='config.yaml'):
+        """
+        Log config dict or config.yaml
+        """
         pass
 
 
-class MLFlowTrainManager(BaseManager):
+class MLFlowManager(BaseManager):
     def __init__(self, url:str, experiment='noname', 
                 run_name:str="noname"):
         """
@@ -31,23 +53,30 @@ class MLFlowTrainManager(BaseManager):
             description="my example"
         )
         self.run_id = run.info.run_id
-        self.max_epoch = 0
+        self.max_step = 0
 
-    def log_epoch_metrics(self, metrics:dict, epoch:int):
-        mlflow.log_metrics(metrics, step=epoch)
-        self.max_epoch = max(self.max_epoch, epoch)
+    def log_step_metrics(self, metrics:dict, step:int):
+        mlflow.log_metrics(metrics, step=step)
+        self.max_step = max(self.max_step, step)
 
     def log_hyperparams(self, hparams:dict):
         mlflow.log_params(hparams)
 
     def log_summary_metrics(self, metrics:dict):
-        mlflow.log_metrics(metrics, step=self.max_epoch + 1)
+        mlflow.log_metrics(metrics, step=self.max_step + 1)
     
-    def log_dict(self, data:dict, fpath:str):
-        mlflow.log_dict(data, fpath)
+    def log_dict(self, data:dict, fname:str):
+        mlflow.log_dict(data, fname)
 
     def log_file(self, fpath:str, subdir:str=None):
         mlflow.log_artifact(fpath, subdir)
+
+    def log_config(self, config: Union[dict, str], name='config.yaml'):
+        if isinstance(config, dict):
+            self.log_dict(config, name)
+        else:
+            self.log_file(config, name)
+
 
     def set_status(self, status:str):
         """
@@ -70,6 +99,6 @@ if __name__ == '__main__':
     url = 'http://192.168.11.181:3500'
     experiment = 'Example'
     id = 1
-    manager = MLFlowTrainManager(url, experiment, id)
+    manager = MLFlowManager(url, experiment, id)
 
     manager.log_config('config.yaml')

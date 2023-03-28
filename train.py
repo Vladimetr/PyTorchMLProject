@@ -27,22 +27,20 @@ import utils
 from metrics import init_loss
 from models import Model, model_init
 from metrics import BinClassificationMetrics
-from manager import MLFlowTrainManager
+from manager import MLFlowManager
 from test import test_step
 
 EXPERIMENTS_DIR = 'dev/experiments'
 manager = None
 
 
-def get_new_run_name(runs_dir:str) -> str:
-    existed_runs = list(filter(lambda x: x.startswith('train-'),
-                               os.listdir(runs_dir)))
+def get_new_run_id(runs_dir:str) -> int:
+    existed_runs = os.listdir(runs_dir)
     max_id = 0
     if existed_runs:
-        max_id = max([int(run_name[6:9]) \
+        max_id = max([int(run_name[:3]) \
                       for run_name in existed_runs])
-    new_run_name = 'train-{:03d}'.format(max_id + 1)
-    return new_run_name
+    return max_id + 1
 
 
 def get_better_metrics(metrics1:dict, metrics2:dict) -> dict:
@@ -144,13 +142,12 @@ def main(train_data:str,
          config:Union[str, dict]='config.yaml',
          epochs:int=15,
          batch_size:int=500,
-         pretrained:str=None,
-         experiment:str='noname',
-         comment:str=None,
+         experiment:str='experiment',
          debug:bool=True,
          tensorboard:bool=False,
          data_shuffle:bool=True,
          log_step:int=1,
+         comment:str=None,
     ):
     # model_dir=None, params='default', data_dir='data', epochs=15, batch_size=500,
     #       retrain=None, train_steps=None, test_steps=None, debug_mode=False):
@@ -182,38 +179,38 @@ def main(train_data:str,
 
     # Create experiment
     if not debug:
-        runs_dir = os.path.join(EXPERIMENTS_DIR, 
-                                experiment.replace(' ', '_'))
+        runs_dir = os.path.join(EXPERIMENTS_DIR,
+                                experiment.replace(' ', '_'),
+                                'train')
         if not osp.exists(runs_dir):
             os.makedirs(runs_dir)
-        run_name = get_new_run_name(runs_dir)
+        run_name = '{:03d}'.format(get_new_run_id(runs_dir))
         if comment:
             run_name += '_' + comment
         # Init manager
-        manager = MLFlowTrainManager(
+        manager = MLFlowManager(
             url=manager_params["url"],
             experiment=experiment,
-            run_name=run_name
+            run_name='train-' + run_name
         )
         manager.log_hyperparams(manager_params["hparams"])
-        manager.log_file("config.yaml")
+        manager.log_config("config.yaml")
         # init dirs
         run_dir = osp.join(runs_dir, run_name)
         os.makedirs(run_dir)
         os.makedirs(osp.join(run_dir, 'weights/'))
-        # copy config
+        # copy config to run_dir
         utils.dict2yaml(config, osp.join(run_dir, 'config.yaml'))
         # create metadata of this experiment
         metadata = {
             "train_data": train_data,
             "test_data": test_data,
             "batch_size": batch_size,
-            "pretrained": pretrained,
             "epochs": epochs,
 
         }
         utils.dict2yaml(metadata, osp.join(run_dir, 'meta.yaml'))
-        manager.log_dict(metadata, 'meta.yaml')
+        manager.log_config(metadata, 'meta.yaml')
         # init files for log metrics
         train_logfile = osp.join(run_dir, 'train.log')
         test_logfile = osp.join(run_dir, 'test.log')
@@ -240,20 +237,22 @@ def main(train_data:str,
     # Define model
     model_name = train_params["model"]
     model_params = config["model"][model_name]
-    model_params["weights"] = pretrained  # None of path/to/model.pt
+    model_params["weights"] = train_params["pretrained"] 
+    # None of path/to/model.pt
     model = model_init(model_name,
                        model_params,
                        train=True,
                        device="cuda:0")
 
     # Define optimizer
-    if train_params["opt"] == 'Adam':
+    opt = train_params["opt"]
+    if opt == 'Adam':
         optimizer = torch.optim.Adam(
             model.parameters(), 
             lr=train_params["learning_rate"], 
             weight_decay=train_params['weight_decay'])
     else:
-        raise Exception('No optimizer: {}'.format(train_params["opt"]))
+        raise Exception(f"No optimizer: '{opt}'")
 
     # Tensorboard writer
     if not debug and tensorboard:
@@ -339,7 +338,7 @@ def main(train_data:str,
             print(f"{k}: {v}")
 
         if manager:
-            manager.log_epoch_metrics(metrics, epoch=ep)
+            manager.log_step_metrics(metrics, step=ep)
 
         # Сheck whether it's the best metrics
         if best_metrics is None or \
@@ -381,10 +380,10 @@ if __name__ == '__main__':
     parser.add_argument('--epochs', '-e', type=int, default=10)
     parser.add_argument('--debug', '-d', action='store_true', default=False, 
                         help='no save results')
-    parser.add_argument('--experiment', '-exp', default='noname', 
+    parser.add_argument('--experiment', '-exp', default='experiment', 
                         help='Name of existed MLFlow experiment')
-    parser.add_argument('--pretrained', '-pr', default=None, 
-                        help='path/to/pretrained/weigths.pt')
+    parser.add_argument('--comment', '-c', type=str, default=None, 
+                        help='Postfix for experiment run name')
     parser.add_argument('--log-step', '-ls', type=int, default=1, 
                         help='interval of log metrics')
     args = parser.parse_args()

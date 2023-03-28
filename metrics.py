@@ -66,7 +66,7 @@ class BinClassificationMetrics:
         Returns:
             int: true positive
         """
-        tp = torch.sum(pred == targ == 1).item()
+        tp = torch.sum(torch.logical_and(pred == 1, targ == 1)).item()
         return tp
     
     @staticmethod
@@ -79,7 +79,7 @@ class BinClassificationMetrics:
         Returns:
             int: true negative
         """
-        tn = torch.sum(pred == targ == 0).item()
+        tn = torch.sum(torch.logical_and(pred == 0, targ == 0)).item()
         return tn
     
     @staticmethod
