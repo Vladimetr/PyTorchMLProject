@@ -253,7 +253,7 @@ def main(train_data:str,
                 tags=tags
             )
             manager.log_hyperparams(manager_params["hparams"])
-            manager.log_config(config_yaml)
+            manager.log_config(config)
             manager.log_config(metadata, 'meta.yaml')
             print(f"Manager experiment run name: {'train-' + run_name}")
 
@@ -410,7 +410,7 @@ if __name__ == '__main__':
                         default=False, 
                         help='no save results')
     parser.add_argument('--experiment', '-exp', type=None, 
-                        default='experiment2', 
+                        default='experiment', 
                         help='Name of existed MLFlow experiment')
     parser.add_argument('--manager', '-mng', action='store_true', 
                         dest='use_manager', default=False, 
