@@ -310,7 +310,7 @@ if __name__ == '__main__':
     parser.add_argument('--no-save', '-ns', action='store_true', 
                         default=False, 
                         help='no save results')
-    parser.add_argument('--experiment', '-exp', default='experiment2', 
+    parser.add_argument('--experiment', '-exp', default='experiment', 
                     help='Name of existed MLFlow experiment')
     parser.add_argument('--run-id', '-r', type=int, default=None,
                     help='RunID for testing')
