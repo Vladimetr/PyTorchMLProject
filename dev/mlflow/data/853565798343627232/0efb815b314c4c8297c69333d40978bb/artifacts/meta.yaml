@@ -1,0 +1,4 @@
+data: data/test_manifest.csv
+batch_size: 1
+data_size: 4
+test_steps: 4

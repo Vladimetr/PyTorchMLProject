@@ -1,0 +1,6 @@
+artifact_location: /mlflow/mlruns/853565798343627232
+creation_time: 1680089329905
+experiment_id: '853565798343627232'
+last_update_time: 1680089329905
+lifecycle_stage: active
+name: augmentation

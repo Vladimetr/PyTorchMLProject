@@ -1,0 +1,15 @@
+artifact_uri: /mlflow/mlruns/853565798343627232/0efb815b314c4c8297c69333d40978bb/artifacts
+end_time: 1680089937842
+entry_point_name: ''
+experiment_id: '853565798343627232'
+lifecycle_stage: active
+run_id: 0efb815b314c4c8297c69333d40978bb
+run_name: test-002-1
+run_uuid: 0efb815b314c4c8297c69333d40978bb
+source_name: ''
+source_type: 4
+source_version: ''
+start_time: 1680089934517
+status: 3
+tags: []
+user_id: nlp

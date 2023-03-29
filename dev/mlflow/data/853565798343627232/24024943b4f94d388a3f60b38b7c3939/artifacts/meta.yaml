@@ -1,0 +1,7 @@
+train_data: data/train_manifest.csv
+test_data: data/test_manifest.csv
+batch_size: 1
+train_data_size: 8
+train_steps: 8
+test_data_size: 4
+test_steps: 4

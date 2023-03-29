@@ -1,0 +1,43 @@
+n_classes: 2
+model:
+  cnn:
+    n_classes: 2
+    n_layers: 3
+    fdim: 256
+    weights: dev/experiments/augmentation/train/001/weights/best.pt
+loss:
+  cross_entropy:
+    pos_weight:
+    - 0.8
+    - 0.2
+test:
+  model: cnn
+  metrics:
+  - loss
+  - TP
+  - FN
+  - FP
+  - TN
+  loss: cross_entropy
+preprocess: &id001
+  sample_rate: 16000
+  fdim: 256
+manager:
+  url: http://192.168.11.181:3500
+  hparams:
+    cnn_layers: 3
+data:
+  preprocess: *id001
+  n_classes: 2
+train:
+  model: cnn
+  loss: cross_entropy
+  metrics:
+  - loss
+  - TP
+  - FN
+  opt: Adam
+  learning_rate: 0.0001
+  weight_decay: 1.0e-05
+  grad_norm: 1.0
+  pretrained: ''
