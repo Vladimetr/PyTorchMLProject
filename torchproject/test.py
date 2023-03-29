@@ -25,14 +25,53 @@ manager = None
 class ConfigError(Exception):
     pass
 
-def get_new_run_id(runs_dir:str) -> int:
-    existed_runs = os.listdir(runs_dir)
-    max_id = 0
-    if existed_runs:
-        max_id = max([int(run_name[:3]) \
-                      for run_name in existed_runs])
-    return max_id + 1
+def get_train_run(experiment:str, run_id:int) -> Union[str, None]:
+    """
+    Get run name in given train experiment with given ID
+    Raises:
+        ValueError "Experiment {} doesn't exists"
+        AssertionError: "Multiple runs with ID {run_id}: {run_names}"
+    Returns:
+        str: Run name. For ex. '002_comment'
+        None: If given RunID doesn't exists
+    """
+    exp_dir = osp.join(EXPERIMENTS_DIR, experiment, 'train')
+    try:
+        run_names = os.listdir(exp_dir)
+    except:
+        raise ValueError(f"Experiment '{experiment}' doesn't exists")
+    # get run names with given RunID
+    run_names = list(filter(lambda x: int(x[ :3]) == run_id,
+                            run_names))
+    assert len(run_names) in [0, 1], \
+            f"Multiple runs with ID {run_id}: {run_names}"
+    if not run_names:
+        return None
+    return run_names[0]
 
+
+def get_test_run(experiment:str, train_run_id:int=None) -> str:
+    """
+    Get test experiment run with reference to train RunID (opt)
+    NOTE: if 'train_run_id' is not None, it must be existed
+    Returns:
+        str: new test run name
+    """
+    exp_dir = osp.join(EXPERIMENTS_DIR, experiment, 'test')
+    if not osp.exists(exp_dir):
+        os.makedirs(exp_dir)
+    run_names = os.listdir(exp_dir)
+
+    if train_run_id:
+        prefix = '{:03d}-'.format(train_run_id)
+    else:
+        prefix = ''
+
+    new_run_id = 1
+    while prefix + str(new_run_id) in run_names:
+        new_run_id += 1
+    return prefix + str(new_run_id)
+    
 
 def log_metrics(metrics:dict, step:int, logger,
                 manager:BaseManager=None,
@@ -106,6 +145,8 @@ def main(data:str,
          config:Union[str, dict]='config.yaml',
          batch_size:int=500,
          experiment:str='experiment',
+         run_id:int=None,
+         weights:str='best.pt',
          use_manager:bool=True,
          tensorboard:bool=False,
          data_shuffle:bool=True,
@@ -113,41 +154,60 @@ def main(data:str,
          comment:str=None,
     ):
     """
-    :param model_dir: куда сохранять результаты обучения (при debug_mode=False)
-                        if None, model_dir = date_time
-    :param params: dict with train and feature params.
-                    if params == 'default' take params from params.py
-    :param data_dir: dir with: npy/ , data.csv
-    :param retrain: path/to/model.pt that we need to re-train
-    :param train_steps: сколько батчей прогонять в каждой эпохи
-                    if None, all batches
-    :param test_steps: сколько тестовых батчей прогонять после каждой эпохи
-                        if None, all Test Set
-    :param debug_mode: if True, without save model, summary and logs
+    data(str): path/to/data
+    config (str, dict): config dict or path/to/config.yaml
+    experiment (str): experiment name
+    run_id (int): train experiment RunID for reference, i.e.
+        loading config and specific weights
+    weights (str): weights name to load from given train run
+    use_manager (bool): whether to manage experiment
+    tensorboard (bool): whether to log step metrics to TB
+    data_shiffle (bool): whether to shuffle data
+    log_step (int): interval of loggoing step metrics
+    comment (str): postfix for experiment run name
     """
+    experiment = experiment.replace(' ', '_')
     global manager
+
+    # Get reference to train RunID
+    if run_id:
+        train_run_name = get_train_run(experiment, run_id)
+        if not train_run_name:
+            raise ValueError()
+        train_run_dir = osp.join(EXPERIMENTS_DIR, experiment,
+                                 'train', train_run_name)
+        config = osp.join(train_run_dir, 'config.yaml')
+        weights = osp.join(train_run_dir, 'weights', weights)
+    else:
+        weights = None  # weights must be defined in config
+    
+    # Define test Run name
+    run_name = get_test_run(experiment, run_id)
+    if comment:
+        run_name += '_' + comment
+
     if isinstance(config, str):
         # load config from yaml
         config = utils.config_from_yaml(config)
+    else:
+        config = dict(config)  # copy
 
+    # Load main params
     test_params = config["test"]
     data_params = config["data"]
-    model_params = config["model"]
     manager_params = config["manager"]
+    model_name = test_params["model"]
+    model_params = config["model"][model_name]
 
-    runs_dir = os.path.join(EXPERIMENTS_DIR, 
-                            experiment.replace(' ', '_'), 
-                            'test')
-    if not osp.exists(runs_dir):
-        os.makedirs(runs_dir)
-    run_name = '{:03d}'.format(get_new_run_id(runs_dir))
-    if comment:
-        run_name += '_' + comment
-    # init dirs
-    run_dir = osp.join(runs_dir, run_name)
+    # Redefine weights
+    if weights:
+        model_params["weights"] = weights
+        
+    # Create storage
+    run_dir = os.path.join(EXPERIMENTS_DIR, experiment,
+                           'test', run_name)
     os.makedirs(run_dir)
-    os.makedirs(osp.join(run_dir, 'weights/'))
-    # copy config
+    # save config
     utils.dict2yaml(config, osp.join(run_dir, 'config.yaml'))
     # create metadata of this experiment
     metadata = {
@@ -170,8 +230,8 @@ def main(data:str,
             tags={'mode': 'test'}
         )
         manager.log_hyperparams(manager_params["hparams"])
-        manager.log_file("config.yaml")
-        manager.log_dict(metadata, 'meta.yaml')
+        manager.log_config(config)
+        manager.log_config(metadata, 'meta.yaml')
         print(f"Manager experiment run name: {'test-' + run_name}")
 
     # Load test data
@@ -182,8 +242,6 @@ def main(data:str,
                               batch_sampler=sampler)
 
     # Define model
-    model_name = test_params["model"]
-    model_params = config["model"][model_name]
     if not model_params["weights"]:
         raise ConfigError("Weights are not defined")
     model = model_init(model_name,
@@ -247,8 +305,13 @@ if __name__ == '__main__':
                         default='data/test_manifest.csv',
                         help='path/to/data')
     parser.add_argument('--batch_size', '-bs', type=int, default=20)
-    parser.add_argument('--experiment', '-exp', default='experiment', 
+    parser.add_argument('--experiment', '-exp', default='experiment2', 
                     help='Name of existed MLFlow experiment')
+    parser.add_argument('--run-id', '-r', type=int, default=None,
+                    help='RunID for testing')
+    parser.add_argument('--weights', '-w', type=str,
+                        default='best.pt', 
+                    help='Weights name for loading from this run')
     parser.add_argument('--manager', '-mng', action='store_true', 
                         dest='use_manager', default=False, 
                         help='whether to use ML experiment manager')

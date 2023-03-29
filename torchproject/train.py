@@ -70,13 +70,11 @@ def status_handler(func):
 
 
 def create_tb_writer(experiment:str, run_name:str, 
-                     subdir:str=None) -> SummaryWriter:
+                     mode:str=None) -> SummaryWriter:
     """
     mode (str): 'train', 'test'
     """
-    log_dir = osp.join(TB_LOGS_DIR, experiment, 'train', run_name)
-    if subdir:
-        log_dir += '/' + subdir
+    log_dir = osp.join(TB_LOGS_DIR, experiment, mode, run_name)
     if not osp.exists(log_dir):
         os.makedirs(log_dir)
     writer = SummaryWriter(log_dir=log_dir)
@@ -208,7 +206,7 @@ def main(train_data:str,
         run_dir = osp.join(runs_dir, run_name)
         os.makedirs(run_dir)
         os.makedirs(osp.join(run_dir, 'weights/'))
-        # copy config to run_dir
+        # save config to run_dir
         utils.dict2yaml(config, osp.join(run_dir, 'config.yaml'))
         # create metadata of this experiment
         metadata = {
@@ -280,8 +278,8 @@ def main(train_data:str,
 
     # Tensorboard writer
     if not debug and tensorboard:
-        writer_train = create_tb_writer(experiment, run_name)
-        writer_test = create_tb_writer(experiment, run_name, 'subtest')
+        writer_train = create_tb_writer(experiment, run_name, 'train')
+        writer_test = create_tb_writer(experiment, run_name, 'test')
     else:
         writer_test = writer_train = None
 
@@ -414,7 +412,7 @@ if __name__ == '__main__':
                         default=False, 
                         help='no save results')
     parser.add_argument('--experiment', '-exp', type=None, 
-                        default='experiment', 
+                        default='experiment2', 
                         help='Name of existed MLFlow experiment')
     parser.add_argument('--manager', '-mng', action='store_true', 
                         dest='use_manager', default=False, 
