@@ -169,7 +169,8 @@ def main(data:str,
     if run_id:
         train_run_name = get_train_run(experiment, run_id)
         if not train_run_name:
-            raise ValueError()
+            raise ValueError(f"RunID {run_id} in experiment "
+                             f"'{experiment}' doesn't exists")
         train_run_dir = osp.join(EXPERIMENTS_DIR, experiment,
                                  'train', train_run_name)
         config = osp.join(train_run_dir, 'config.yaml')
@@ -313,9 +314,9 @@ if __name__ == '__main__':
                         default=False, 
                         help='no save results')
     parser.add_argument('--experiment', '-exp', default='experiment', 
-                    help='Name of existed MLFlow experiment')
+                    help='experiment name')
     parser.add_argument('--run-id', '-r', type=int, default=None,
-                    help='RunID for testing')
+                    help='train RunID for reference')
     parser.add_argument('--weights', '-w', type=str,
                         default='best.pt', 
                     help='Weights name for loading from this run')
