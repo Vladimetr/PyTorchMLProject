@@ -1,4 +1,3 @@
-
 ## EXAMPLE USAGE ##
 1. **Train** <br/>
 ```
@@ -46,6 +45,7 @@ python3 -m torchproject.train \
     --manager
 ```
 >NOTE: this experiment must be created in MLFlow Server
+>NOTE: add `-v $PWD/dev/mlflow/data:/mlflow/mlruns` to run container
 
 5. **Train experiment with MLFlow and Tensorboard** <br/>
 ```
