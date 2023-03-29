@@ -26,9 +26,8 @@ from .metrics import init_loss, BinClassificationMetrics
 from .models import Model, model_init
 from .manager import MLFlowManager
 from .test import test_step
+from .utils import EXPERIMENTS_DIR, TB_LOGS_DIR
 
-EXPERIMENTS_DIR = 'dev/experiments'
-TB_LOGS_DIR = 'dev/tensorboard/logs'
 manager = None
 
 
@@ -170,7 +169,7 @@ def main(train_data:str,
     log_step (int): interval of loggoing step metrics
     comment (str): postfix for experiment run name
     """
-    experiment = experiment.replace(' ', '_')
+    experiment = experiment.lower().replace(' ', '_')
     global manager
 
     # Load config

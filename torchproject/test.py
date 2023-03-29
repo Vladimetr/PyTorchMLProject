@@ -16,9 +16,8 @@ from . import utils
 from .manager import MLFlowManager, BaseManager
 from .models import model_init
 from .metrics import init_loss, BinClassificationMetrics
+from .utils import EXPERIMENTS_DIR, TB_LOGS_DIR
 
-EXPERIMENTS_DIR = 'dev/experiments'
-TB_LOGS_DIR = 'dev/tensorboard/logs'
 manager = None
 
 
@@ -163,7 +162,7 @@ def main(data:str,
     log_step (int): interval of loggoing step metrics
     comment (str): postfix for experiment run name
     """
-    experiment = experiment.replace(' ', '_')
+    experiment = experiment.lower().replace(' ', '_')
     global manager
 
     # Get reference to train RunID
@@ -239,7 +238,10 @@ def main(data:str,
                 url=manager_params["url"],
                 experiment=experiment,
                 run_name='test-' + run_name,
-                tags={'mode': 'test'}
+                tags={
+                    'mode': 'test',
+                    'weights': osp.split(model_params["weights"])[1]
+                }
             )
             manager.log_hyperparams(manager_params["hparams"])
             manager.log_config(config)

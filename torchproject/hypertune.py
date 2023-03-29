@@ -100,7 +100,6 @@ def main(train_data:str,
              log_step=log_step,
              comment=f'hypertune-{i+1}'
         )
-        utils.dict2yaml(config, f"config{i+1}.yaml")
         
 
 if __name__ == '__main__':
