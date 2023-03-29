@@ -73,18 +73,14 @@ def get_test_run(experiment:str, train_run_id:int=None) -> str:
     return prefix + str(new_run_id)
     
 
-def log_metrics(metrics:dict, step:int, logger,
+def log_metrics(metrics:dict, step:int, 
+                metrics_computer=BinClassificationMetrics,
                 manager:BaseManager=None,
                 tb_writer:SummaryWriter=None):
-
-    # log metrics to .csv
-    log_line = [str(v) for _, v in metrics.items()]
-    logger.info(' '.join(log_line))
-
+    metrics_computer.log_metrics(metrics, step=step)
     # Manager
     if manager:
         manager.log_step_metrics(metrics, step)
-
     # Tensorboard
     if tb_writer:
         for metric_name, value in metrics.items():
@@ -144,6 +140,7 @@ def test_step(
 def main(data:str,
          config:Union[str, dict]='config.yaml',
          batch_size:int=500,
+         no_save:bool=False,
          experiment:str='experiment',
          run_id:int=None,
          weights:str='best.pt',
@@ -162,7 +159,7 @@ def main(data:str,
     weights (str): weights name to load from given train run
     use_manager (bool): whether to manage experiment
     tensorboard (bool): whether to log step metrics to TB
-    data_shiffle (bool): whether to shuffle data
+    data_shuffle (bool): whether to shuffle data
     log_step (int): interval of loggoing step metrics
     comment (str): postfix for experiment run name
     """
@@ -181,11 +178,6 @@ def main(data:str,
     else:
         weights = None  # weights must be defined in config
     
-    # Define test Run name
-    run_name = get_test_run(experiment, run_id)
-    if comment:
-        run_name += '_' + comment
-
     if isinstance(config, str):
         # load config from yaml
         config = utils.config_from_yaml(config)
@@ -198,48 +190,70 @@ def main(data:str,
     manager_params = config["manager"]
     model_name = test_params["model"]
     model_params = config["model"][model_name]
-
-    # Redefine weights
-    if weights:
-        model_params["weights"] = weights
-        
-    # Create storage
-    run_dir = os.path.join(EXPERIMENTS_DIR, experiment,
-                           'test', run_name)
-    os.makedirs(run_dir)
-    # save config
-    utils.dict2yaml(config, osp.join(run_dir, 'config.yaml'))
-    # create metadata of this experiment
-    metadata = {
-        "data": data,
-        "batch_size": batch_size,
-
-    }
-    utils.dict2yaml(metadata, osp.join(run_dir, 'meta.yaml'))
-    # init files for log metrics
-    test_logfile = osp.join(run_dir, 'test.csv')
-    test_logger = utils.get_logger('test', test_logfile)
-    print(f"Experiment storage: '{run_dir}'")
-
-    # Init manager
-    if use_manager:
-        manager = MLFlowManager(
-            url=manager_params["url"],
-            experiment=experiment,
-            run_name='test-' + run_name,
-            tags={'mode': 'test'}
-        )
-        manager.log_hyperparams(manager_params["hparams"])
-        manager.log_config(config)
-        manager.log_config(metadata, 'meta.yaml')
-        print(f"Manager experiment run name: {'test-' + run_name}")
+    writer, logger = None, None
 
     # Load test data
     test_set = MyDataset(data, params=data_params)
+    data_size = len(test_set)
     sampler = BucketingSampler(test_set, batch_size, shuffle=data_shuffle)
     test_set = CudaDataLoader(test_set, collate_fn=test_set.collate,
                               pin_memory=True, num_workers=4,
                               batch_sampler=sampler)
+    test_steps = len(test_set)  # number of batches
+
+    # Redefine weights
+    if weights:
+        model_params["weights"] = weights
+
+    # Define metadata
+    metadata = {
+            "data": data,
+            "batch_size": batch_size,
+            "data_size": data_size,
+            "test_steps": test_steps,
+    }
+    utils.pprint_dict(metadata)
+
+    if not no_save:
+        # Define test Run name
+        run_name = get_test_run(experiment, run_id)
+        if comment:
+            run_name += '_' + comment
+            
+        # Create storage
+        run_dir = os.path.join(EXPERIMENTS_DIR, experiment,
+                            'test', run_name)
+        os.makedirs(run_dir)
+        # save config
+        utils.dict2yaml(config, osp.join(run_dir, 'config.yaml'))
+        # create metadata of this experiment
+        utils.dict2yaml(metadata, osp.join(run_dir, 'meta.yaml'))
+        # init files for log metrics
+        logfile = osp.join(run_dir, 'test.csv')
+        logger = utils.get_logger('test', logfile)
+        print(f"Experiment storage: '{run_dir}'")
+
+        # Init manager
+        if use_manager:
+            manager = MLFlowManager(
+                url=manager_params["url"],
+                experiment=experiment,
+                run_name='test-' + run_name,
+                tags={'mode': 'test'}
+            )
+            manager.log_hyperparams(manager_params["hparams"])
+            manager.log_config(config)
+            manager.log_config(metadata, 'meta.yaml')
+            print(f"Manager experiment run name: {'test-' + run_name}")
+
+        # Tensorboard writer
+        if tensorboard:
+            log_dir = osp.join(TB_LOGS_DIR, experiment, 'test', run_name)
+            if not osp.exists(log_dir):
+                os.makedirs(log_dir)
+            writer = SummaryWriter(log_dir=log_dir)
+            print(f"Tensorboard logs: '{log_dir}'")
+
 
     # Define model
     if not model_params["weights"]:
@@ -249,16 +263,6 @@ def main(data:str,
                        train=True,
                        device="cuda:0")
 
-    # Tensorboard writer
-    if tensorboard:
-        log_dir = osp.join(TB_LOGS_DIR, experiment, 'test', run_name)
-        if not osp.exists(log_dir):
-            os.makedirs(log_dir)
-        writer = SummaryWriter(log_dir=log_dir)
-        print(f"Tensorboard logs: '{log_dir}'")
-    else:
-        writer = None
-
     # Define loss
     loss_name = test_params["loss"]
     loss_params = config["loss"][loss_name]
@@ -266,11 +270,9 @@ def main(data:str,
 
     # Init test metrics computer
     compute_metrics = test_params["metrics"]
-    metrics_computer = BinClassificationMetrics(
-                               compute_metrics=compute_metrics)
-    title = ' '.join([name for name in \
-                      ["Loss"] + compute_metrics])
-    test_logger.info(title)
+    metrics_computer = BinClassificationMetrics(step=True,
+                        compute_metrics=compute_metrics,
+                        logger=logger)
 
     test_set.shuffle(15)
     for step, batch in enumerate(test_set):
@@ -280,14 +282,14 @@ def main(data:str,
             loss,
             metrics_computer
         )
-        if step % log_step == 0:
-            log_metrics(metrics, step=step, 
-                        logger=test_logger,
+        if (step + 1) % log_step == 0:
+            log_metrics(metrics, step=step+1, 
+                        metrics_computer=metrics_computer,
                         manager=manager,
                         tb_writer=writer)
 
     avg_metrics = metrics_computer.summary()
-    print("--- Average metrics ---")
+    print("\n--- Average metrics ---")
     for k, v in avg_metrics.items():
         print(f"{k}: {v}")
     if manager:
@@ -305,6 +307,9 @@ if __name__ == '__main__':
                         default='data/test_manifest.csv',
                         help='path/to/data')
     parser.add_argument('--batch_size', '-bs', type=int, default=20)
+    parser.add_argument('--no-save', '-ns', action='store_true', 
+                        default=False, 
+                        help='no save results')
     parser.add_argument('--experiment', '-exp', default='experiment2', 
                     help='Name of existed MLFlow experiment')
     parser.add_argument('--run-id', '-r', type=int, default=None,

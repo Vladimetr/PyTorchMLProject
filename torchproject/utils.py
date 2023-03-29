@@ -21,6 +21,9 @@ def dict2yaml(data:dict, yaml_path:str):
     with open(yaml_path, 'w') as f:
         f.write(oyaml.dump(data))
 
+def pprint_dict(d:dict):
+    for k, v in d.items():
+        print(f"- {k}: {v}")
 
 class ModelParamsHandler:
     def __init__(self, model:torch.nn.Module):

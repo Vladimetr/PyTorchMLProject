@@ -81,6 +81,20 @@ def create_tb_writer(experiment:str, run_name:str,
     return writer
 
 
+def log_metrics(metrics:dict, epoch:int, step:int, global_step:int,
+                metrics_computer=BinClassificationMetrics,
+                tb_writer:SummaryWriter=None):
+    metrics_computer.log_metrics(metrics, epoch=epoch, step=step)
+    # Tensorboard
+    if tb_writer:
+        for metric_name, value in metrics.items():
+            if metric_name == 'loss':
+                tb_writer.add_scalar('Loss/CrossEntropy', value, 
+                                     global_step)
+            else:
+                tb_writer.add_scalar('Metrics/' + metric_name, 
+                                     value, global_step)
+
 def train_step(
         model:Model,
         batch:tuple,
@@ -131,24 +145,6 @@ def train_step(
     return metrics
 
 
-def log_metrics(metrics:dict, epoch:int, step:int, 
-                global_step:int, logger,
-                tb_writer:SummaryWriter=None):
-
-    # log metrics to .csv
-    log_line = [epoch, step] + [v for _, v in metrics.items()]
-    logger.info(' '.join([str(v) for v in log_line]))
-
-    # Tensorboard
-    if tb_writer:
-        for metric_name, value in metrics.items():
-            if metric_name == 'loss':
-                tb_writer.add_scalar('Loss/CrossEntropy', value, 
-                                     global_step)
-            else:
-                tb_writer.add_scalar('Metrics/' + metric_name, 
-                                     value, global_step)
-            
 @status_handler
 def main(train_data:str,
          test_data:str,
@@ -156,27 +152,23 @@ def main(train_data:str,
          epochs:int=15,
          batch_size:int=500,
          experiment:str='experiment',
-         debug:bool=True,
+         no_save:bool=False,
          use_manager:bool=True,
          tensorboard:bool=False,
          data_shuffle:bool=True,
          log_step:int=1,
          comment:str=None,
     ):
-    # model_dir=None, params='default', data_dir='data', epochs=15, batch_size=500,
-    #       retrain=None, train_steps=None, test_steps=None, debug_mode=False):
     """
-    :param model_dir: куда сохранять результаты обучения (при debug_mode=False)
-                        if None, model_dir = date_time
-    :param params: dict with train and feature params.
-                    if params == 'default' take params from params.py
-    :param data_dir: dir with: npy/ , data.csv
-    :param retrain: path/to/model.pt that we need to re-train
-    :param train_steps: сколько батчей прогонять в каждой эпохи
-                    if None, all batches
-    :param test_steps: сколько тестовых батчей прогонять после каждой эпохи
-                        if None, all Test Set
-    :param debug_mode: if True, without save model, summary and logs
+    train_data(str): path/to/train/data
+    test_data(str): path/to/test/data
+    config (str, dict): config dict or path/to/config.yaml
+    experiment (str): experiment name
+    use_manager (bool): whether to manage experiment
+    tensorboard (bool): whether to log step metrics to TB
+    data_shuffle (bool): whether to shuffle data
+    log_step (int): interval of loggoing step metrics
+    comment (str): postfix for experiment run name
     """
     experiment = experiment.replace(' ', '_')
     global manager
@@ -190,10 +182,40 @@ def main(train_data:str,
     test_params = config["test"]
     data_params = config["data"]
     manager_params = config["manager"]
-    train_logfile, test_logfile = None, None
+    train_logger, test_logger = None, None
+
+    # Load train data
+    train_set = MyDataset(train_data, params=data_params)
+    train_data_size = len(train_set)
+    sampler = BucketingSampler(train_set, batch_size, shuffle=data_shuffle)
+    train_set = CudaDataLoader(train_set, collate_fn=train_set.collate, 
+                               pin_memory=True, num_workers=4,
+                               batch_sampler=sampler)
+    train_steps = len(train_set)  # number of train batches
+
+    # Load test data
+    test_set = MyDataset(test_data, params=data_params)
+    test_data_size = len(test_set)
+    sampler = BucketingSampler(test_set, batch_size, shuffle=data_shuffle)
+    test_set = CudaDataLoader(test_set, collate_fn=test_set.collate,
+                              pin_memory=True, num_workers=4,
+                              batch_sampler=sampler)
+    test_steps = len(test_set)  # number of test batches
+    
+    # Define metadata
+    metadata = {
+            "train_data": train_data,
+            "test_data": test_data,
+            "batch_size": batch_size,
+            "train_data_size": train_data_size,
+            "train_steps": train_steps,
+            "test_data_size": test_data_size,
+            "test_steps": test_steps,
+    }
+    utils.pprint_dict(metadata)
 
     # Create experiment
-    if not debug:
+    if not no_save:
         runs_dir = os.path.join(EXPERIMENTS_DIR,
                                 experiment,
                                 'train')
@@ -208,17 +230,14 @@ def main(train_data:str,
         os.makedirs(osp.join(run_dir, 'weights/'))
         # save config to run_dir
         utils.dict2yaml(config, osp.join(run_dir, 'config.yaml'))
-        # create metadata of this experiment
-        metadata = {
-            "train_data": train_data,
-            "test_data": test_data,
-            "batch_size": batch_size,
-
-        }
         utils.dict2yaml(metadata, osp.join(run_dir, 'meta.yaml'))
         # init files for log metrics (in csv format)
         train_logfile = osp.join(run_dir, 'train.csv')
+        train_logger = utils.get_logger('train', train_logfile)
         test_logfile = osp.join(run_dir, 'test.csv')
+        test_logger = utils.get_logger('test', test_logfile)
+        # set path to best weights.pt
+        best_weights_path = osp.join(run_dir, f"weights/best.pt")
         print(f"Experiment storage: '{run_dir}'")
 
         # Init manager
@@ -238,24 +257,6 @@ def main(train_data:str,
             manager.log_config(metadata, 'meta.yaml')
             print(f"Manager experiment run name: {'train-' + run_name}")
 
-    # Files for logging metrics
-    train_logger = utils.get_logger('train', train_logfile)
-    test_logger = utils.get_logger('test', test_logfile)
-
-    # Load train data
-    train_set = MyDataset(train_data, params=data_params)
-    sampler = BucketingSampler(train_set, batch_size, shuffle=data_shuffle)
-    train_set = CudaDataLoader(train_set, collate_fn=train_set.collate, 
-                               pin_memory=True, num_workers=4,
-                               batch_sampler=sampler)
-
-    # Load test data
-    test_set = MyDataset(test_data, params=data_params)
-    sampler = BucketingSampler(test_set, batch_size, shuffle=data_shuffle)
-    test_set = CudaDataLoader(test_set, collate_fn=test_set.collate,
-                              pin_memory=True, num_workers=4,
-                              batch_sampler=sampler)
-    
     # Define model
     model_name = train_params["model"]
     model_params = config["model"][model_name]
@@ -277,7 +278,7 @@ def main(train_data:str,
         raise Exception(f"No optimizer: '{opt}'")
 
     # Tensorboard writer
-    if not debug and tensorboard:
+    if not no_save and tensorboard:
         writer_train = create_tb_writer(experiment, run_name, 'train')
         writer_test = create_tb_writer(experiment, run_name, 'test')
     else:
@@ -291,18 +292,16 @@ def main(train_data:str,
     # Init train metrics computer
     compute_metrics = train_params["metrics"]
     train_metrics_computer = BinClassificationMetrics(
-                               compute_metrics=compute_metrics)
-    title = ' '.join([name for name in \
-                      ["Epoch", "Step", "Loss"] + compute_metrics])
-    train_logger.info(title)
+                               step=True, epoch=True,
+                               compute_metrics=compute_metrics,
+                               logger=train_logger)
 
     # Init test metrics computer
     compute_metrics = test_params["metrics"]
     test_metrics_computer = BinClassificationMetrics(
-                               compute_metrics=compute_metrics)
-    title = ' '.join([name for name in \
-                      ["Epoch", "Step", "Loss"] + compute_metrics])
-    test_logger.info(title)
+                                step=True, epoch=True,
+                                compute_metrics=compute_metrics,
+                                logger=test_logger)
 
     best_metrics = {
         'TP': 0,
@@ -310,7 +309,6 @@ def main(train_data:str,
         'FN': 1,
         'TN': 0,
     }
-    best_weights_path = osp.join(run_dir, f"weights/best.pt")
     train_iter = test_iter = 0
     for ep in range(1, epochs + 1):
         print(f"\n{ep}/{epochs} Epoch...")
@@ -328,15 +326,15 @@ def main(train_data:str,
                 metrics_computer=train_metrics_computer,
                 train_params=train_params,
             )
-            if i % log_step == 0:
-                log_metrics(metrics, epoch=ep, step=i, 
+            if (i+1) % log_step == 0:
+                log_metrics(metrics, epoch=ep, step=i+1, 
                             global_step=train_iter,
-                            logger=train_logger,
+                            metrics_computer=train_metrics_computer,
                             tb_writer=writer_train)
             train_iter += 1
                 
         # Saving
-        if not debug:
+        if not no_save:
             weights_path = osp.join(run_dir, f"weights/{ep}.pt")
             model.save(weights_path)
             print(f"Weights save: '{weights_path}'")
@@ -350,9 +348,9 @@ def main(train_data:str,
                 loss=loss,
                 metrics_computer=test_metrics_computer
             )
-            log_metrics(metrics, epoch=ep, step=i, 
+            log_metrics(metrics, epoch=ep, step=i+1, 
                         global_step=test_iter,
-                        logger=test_logger,
+                        metrics_computer=test_metrics_computer,
                         tb_writer=writer_test)
             test_iter += 1
             
@@ -370,7 +368,7 @@ def main(train_data:str,
             best_metrics = metrics
             print('New best results')
             # save best weights
-            if not debug:
+            if not no_save:
                 model.save(best_weights_path)
                 print(f"Weights save: '{best_weights_path}'")
 
@@ -387,7 +385,7 @@ def main(train_data:str,
         utils.dict2yaml(config, osp.join(run_dir, 'config.yaml'))
         manager.log_config(osp.join(run_dir, 'config.yaml'))
 
-    if not debug:
+    if not no_save:
         if manager:
             manager.set_status("FINISHED")
         if tensorboard:
@@ -408,7 +406,7 @@ if __name__ == '__main__':
     parser.add_argument('--batch-size', '-bs', type=int, 
                         default=100)
     parser.add_argument('--epochs', '-e', type=int, default=10)
-    parser.add_argument('--debug', '-d', action='store_true', 
+    parser.add_argument('--no-save', '-ns', action='store_true', 
                         default=False, 
                         help='no save results')
     parser.add_argument('--experiment', '-exp', type=None, 

@@ -42,7 +42,8 @@ def init_loss(name:str, params:dict, device='cpu') -> Loss:
 
 
 class BinClassificationMetrics:
-    def __init__(self, compute_metrics:list):
+    def __init__(self, compute_metrics:list, logger=None,
+                 epoch=False, step=False):
         """
         n_classes (int): number of classes C
         compute_metrics (list[str]): order of metrics to compute
@@ -56,7 +57,19 @@ class BinClassificationMetrics:
 
         }
         self.reset_summary()
-
+        log_items = list(compute_metrics)
+        if step:
+            log_items = ['step'] + log_items
+        if epoch:
+            log_items = ['epoch'] + log_items
+        self.log_items = log_items
+        if logger:
+            # set title
+            logger.info(' '.join(log_items))
+        self.logger = logger
+        self.epoch = epoch
+        self.step = step
+        
     @staticmethod
     def tp(pred:torch.Tensor, targ:torch.Tensor) -> float:
         """
@@ -130,11 +143,36 @@ class BinClassificationMetrics:
             try:
                 metrics[name] = self.metrics_funcs[name](pred, targ)
             except KeyError:
-                raise ValueError(f"Invalid metric name '{name}'")
+                continue
         if accumulate:
             self.add_summary(metrics)
         return metrics
     
+    def log_metrics(self, metrics:dict, epoch:int=None, step:int=None):
+        items = dict(metrics)
+        if epoch:
+            items['epoch'] = epoch
+        if step:
+            items['step'] = step
+
+        if self.logger:
+            # log to file in .csv format
+            log_line = ' '.join(str(items[col]) for col in self.log_items)
+            self.logger.info(log_line)
+        else:
+            # print to stdout
+            log_items = []  # list[str]
+            for name in self.log_items:
+                try:
+                    value = items[name]
+                except KeyError:
+                    raise ValueError(f"Item '{name}' is missing for log")
+                if isinstance(value, float):
+                    value = '{:.3f}'.format(value)
+                log_items.append(f"{name}: {value}")
+            log_line = ' | '.join(log_items)
+            print(log_line)
+
     def add_summary(self, metrics:dict):
         for k, v in metrics.items():
             try:
