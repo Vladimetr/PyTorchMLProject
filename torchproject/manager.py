@@ -84,6 +84,7 @@ class ClearMLManager(BaseManager):
         self.logger = Logger.current_logger()
         self.max_step = 0
         self.add_tags(tags)
+        print(f"ClearML experiment: '{PROJECT_NAME}/{task_name}'")
         
     def log_hyperparams(self, hparams: dict):
         self.task.connect(hparams, name='hparams')
@@ -122,6 +123,11 @@ class ClearMLManager(BaseManager):
                 iteration=self.max_step
         )
             
+    def add_tags(self, tags:Union[List[str], dict]):
+        if isinstance(tags, dict):
+            tags = list(tags.values())
+        self.task.add_tags(tags)
+            
 
 class MLFlowManager(BaseManager):
     def __init__(self, url:str, 
@@ -154,6 +160,7 @@ class MLFlowManager(BaseManager):
         self.run_id = run.info.run_id
         self.max_step = 0
         self.train = train
+        print(f"MLFlow experiment: '{experiment}/{run_name}'")
 
     def log_step_metrics(self, metrics:dict, step:int):
         mlflow.log_metrics(metrics, step=step)

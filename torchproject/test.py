@@ -13,7 +13,7 @@ from torch.utils.tensorboard import SummaryWriter
 from .models import Model
 from .data import CudaDataLoader, BucketingSampler, MyDataset
 from . import utils
-from .manager import MLFlowManager, BaseManager
+from .manager import BaseManager, MLFlowManager, ClearMLManager
 from .models import model_init
 from .metrics import init_loss, BinClassificationMetrics
 from .utils import EXPERIMENTS_DIR, TB_LOGS_DIR
@@ -143,7 +143,8 @@ def main(data:str,
          experiment:str='experiment',
          run_id:int=None,
          weights:str='best.pt',
-         use_manager:bool=True,
+         use_mlflow:bool=False,
+         use_clearml:bool=False,
          tensorboard:bool=False,
          data_shuffle:bool=True,
          log_step:int=1,
@@ -156,7 +157,8 @@ def main(data:str,
     run_id (int): train experiment RunID for reference, i.e.
         loading config and specific weights
     weights (str): weights name to load from given train run
-    use_manager (bool): whether to manage experiment
+    use_mlflow (bool): whether to manage experiment with MLFlow
+    use_clearml (bool): whether to manage experiment with ClearML
     tensorboard (bool): whether to log step metrics to TB
     data_shuffle (bool): whether to shuffle data
     log_step (int): interval of loggoing step metrics
@@ -164,6 +166,8 @@ def main(data:str,
     """
     experiment = experiment.lower().replace(' ', '_')
     global manager
+    if use_clearml and use_mlflow:
+        raise ValueError("Choose either mlflow or clearml for management")
 
     # Get reference to train RunID
     if run_id:
@@ -224,29 +228,40 @@ def main(data:str,
         run_dir = os.path.join(EXPERIMENTS_DIR, experiment,
                             'test', run_name)
         os.makedirs(run_dir)
+        metadata["storage"] = run_dir
         # save config
-        utils.dict2yaml(config, osp.join(run_dir, 'config.yaml'))
+        config_yaml = osp.join(run_dir, 'config.yaml')
+        utils.dict2yaml(config, config_yaml)
         # create metadata of this experiment
-        utils.dict2yaml(metadata, osp.join(run_dir, 'meta.yaml'))
+        meta_yaml = osp.join(run_dir, 'meta.yaml')
+        utils.dict2yaml(metadata, meta_yaml)
         # init files for log metrics
         logfile = osp.join(run_dir, 'test.csv')
         logger = utils.get_logger('test', logfile)
         print(f"Experiment storage: '{run_dir}'")
 
         # Init manager
-        if use_manager:
-            manager = MLFlowManager(
-                url=manager_params["url"],
-                experiment=experiment,
-                run_name='test-' + run_name,
-                tags={
-                    'mode': 'test',
-                    'weights': osp.split(model_params["weights"])[1]
-                }
-            )
+        if use_mlflow or use_clearml:
+            tags = {
+                'weights': osp.split(model_params["weights"])[1]
+            }
+            params = {
+                "experiment": experiment,
+                "run_name": 'test-' + run_name,
+                "train": False,
+                "tags": tags
+            }
+            if use_clearml:
+                params.update(manager_params["clearml"])
+                manager = ClearMLManager(**params)
+            else:
+                params.update(manager_params["mlflow"])
+                manager = MLFlowManager(**params)
+
+            manager.set_iterations(test_steps)
             manager.log_hyperparams(manager_params["hparams"])
-            manager.log_config(config)
-            manager.log_config(metadata, 'meta.yaml')
+            manager.log_config(config_yaml, 'config.yaml')
+            manager.log_config(meta_yaml, 'meta.yaml')
             print(f"Manager experiment run name: {'test-' + run_name}")
 
         # Tensorboard writer
@@ -320,9 +335,12 @@ if __name__ == '__main__':
     parser.add_argument('--weights', '-w', type=str,
                         default='best.pt', 
                     help='Weights name for loading from this run')
-    parser.add_argument('--manager', '-mng', action='store_true', 
-                        dest='use_manager', default=False, 
-                        help='whether to use ML experiment manager')
+    parser.add_argument('--mlflow', action='store_true', 
+                        dest='use_mlflow', default=False, 
+                        help='whether to use MLFlow for experiment manager')
+    parser.add_argument('--clearml', action='store_true', 
+                        dest='use_clearml', default=False, 
+                        help='whether to use ClearML for experiment manager')
     parser.add_argument('--tensorboard', '-tb', action='store_true', 
                         default=False, 
                         help='whether to use Tensorboard')

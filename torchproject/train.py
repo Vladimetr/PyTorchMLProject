@@ -231,6 +231,7 @@ def main(train_data:str,
         run_dir = osp.join(runs_dir, run_name)
         os.makedirs(run_dir)
         os.makedirs(osp.join(run_dir, 'weights/'))
+        metadata["storage"] = run_dir
         # save config to run_dir
         config_yaml = osp.join(run_dir, 'config.yaml')
         utils.dict2yaml(config, config_yaml)
@@ -261,8 +262,8 @@ def main(train_data:str,
 
             manager.set_iterations(epochs)
             manager.log_hyperparams(manager_params["hparams"])
-            manager.log_config(config_yaml)
-            manager.log_config(meta_yaml)
+            manager.log_config(config_yaml, 'config.yaml')
+            manager.log_config(meta_yaml, 'meta.yaml')
             print(f"Manager experiment run name: {'train-' + run_name}")
 
     # Define model
