@@ -272,7 +272,6 @@ def main(data:str,
             writer = SummaryWriter(log_dir=log_dir)
             print(f"Tensorboard logs: '{log_dir}'")
 
-
     # Define model
     if not model_params["weights"]:
         raise ConfigError("Weights are not defined")
