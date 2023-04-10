@@ -24,7 +24,7 @@ from .data import CudaDataLoader, BucketingSampler, MyDataset
 from . import utils
 from .metrics import init_loss, BinClassificationMetrics
 from .models import Model, model_init
-from .manager import MLFlowManager
+from .manager import MLFlowManager, ClearMLManager
 from .test import test_step
 from .utils import EXPERIMENTS_DIR, TB_LOGS_DIR
 
@@ -152,7 +152,8 @@ def main(train_data:str,
          batch_size:int=500,
          experiment:str='experiment',
          no_save:bool=False,
-         use_manager:bool=True,
+         use_mlflow:bool=False,
+         use_clearml:bool=False,
          tensorboard:bool=False,
          data_shuffle:bool=True,
          log_step:int=1,
@@ -163,7 +164,8 @@ def main(train_data:str,
     test_data(str): path/to/test/data
     config (str, dict): config dict or path/to/config.yaml
     experiment (str): experiment name
-    use_manager (bool): whether to manage experiment
+    use_mlflow (bool): whether to manage experiment with MLFlow
+    use_clearml (bool): whether to manage experiment with ClearML
     tensorboard (bool): whether to log step metrics to TB
     data_shuffle (bool): whether to shuffle data
     log_step (int): interval of loggoing step metrics
@@ -171,6 +173,8 @@ def main(train_data:str,
     """
     experiment = experiment.lower().replace(' ', '_')
     global manager
+    if use_clearml and use_mlflow:
+        raise ValueError("Choose either mlflow or clearml for management")
 
     # Load config
     if isinstance(config, str):
@@ -228,8 +232,10 @@ def main(train_data:str,
         os.makedirs(run_dir)
         os.makedirs(osp.join(run_dir, 'weights/'))
         # save config to run_dir
-        utils.dict2yaml(config, osp.join(run_dir, 'config.yaml'))
-        utils.dict2yaml(metadata, osp.join(run_dir, 'meta.yaml'))
+        config_yaml = osp.join(run_dir, 'config.yaml')
+        utils.dict2yaml(config, config_yaml)
+        meta_yaml = osp.join(run_dir, 'meta.yaml')
+        utils.dict2yaml(metadata, meta_yaml)
         # init files for log metrics (in csv format)
         train_logfile = osp.join(run_dir, 'train.csv')
         train_logger = utils.get_logger('train', train_logfile)
@@ -240,20 +246,23 @@ def main(train_data:str,
         print(f"Experiment storage: '{run_dir}'")
 
         # Init manager
-        if use_manager:
-            tags = {
-                'mode': 'train',
-                'epochs': str(epochs),
+        if use_mlflow or use_clearml:
+            params = {
+                "experiment": experiment,
+                "run_name": 'train-' + run_name,
+                "train": True,
             }
-            manager = MLFlowManager(
-                url=manager_params["url"],
-                experiment=experiment,
-                run_name='train-' + run_name,
-                tags=tags
-            )
+            if use_clearml:
+                params.update(manager_params["clearml"])
+                manager = ClearMLManager(**params)
+            else:
+                params.update(manager_params["mlflow"])
+                manager = MLFlowManager(**params)
+
+            manager.set_iterations(epochs)
             manager.log_hyperparams(manager_params["hparams"])
-            manager.log_config(config)
-            manager.log_config(metadata, 'meta.yaml')
+            manager.log_config(config_yaml)
+            manager.log_config(meta_yaml)
             print(f"Manager experiment run name: {'train-' + run_name}")
 
     # Define model
@@ -312,7 +321,7 @@ def main(train_data:str,
     for ep in range(1, epochs + 1):
         print(f"\n{ep}/{epochs} Epoch...")
         if manager:
-            manager.add_tags({'current_epoch': ep})
+            manager.log_iteration(ep)
 
         model.train()
         train_set.shuffle(ep)
@@ -359,7 +368,7 @@ def main(train_data:str,
             print(f"{k}: {v}")
 
         if manager:
-            manager.log_step_metrics(metrics, step=ep)
+            manager.log_epoch_metrics(metrics, epoch=ep)
 
         # Сheck whether it's the best metrics
         if best_metrics is None or \
@@ -378,11 +387,11 @@ def main(train_data:str,
     print("Best metrics:")
     for k, v in best_metrics.items():
         print(f"{k}: {v}")
+    config["model"][model_name]["weights"] = best_weights_path
+    utils.dict2yaml(config, config_yaml)
     if manager:
         manager.log_summary_metrics(best_metrics)
-        config["model"][model_name]["weights"] = best_weights_path
-        utils.dict2yaml(config, osp.join(run_dir, 'config.yaml'))
-        manager.log_config(osp.join(run_dir, 'config.yaml'))
+        manager.log_config(config_yaml)
 
     if not no_save:
         if manager:
@@ -411,9 +420,12 @@ if __name__ == '__main__':
     parser.add_argument('--experiment', '-exp', type=None, 
                         default='experiment', 
                         help='Name of existed MLFlow experiment')
-    parser.add_argument('--manager', '-mng', action='store_true', 
-                        dest='use_manager', default=False, 
-                        help='whether to use ML experiment manager')
+    parser.add_argument('--mlflow', action='store_true', 
+                        dest='use_mlflow', default=False, 
+                        help='whether to use MLFlow for experiment manager')
+    parser.add_argument('--clearml', action='store_true', 
+                        dest='use_clearml', default=False, 
+                        help='whether to use ClearML for experiment manager')
     parser.add_argument('--tensorboard', '-tb', action='store_true', 
                         default=False, 
                         help='whether to use Tensorboard')

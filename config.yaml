@@ -21,7 +21,11 @@ preprocess: &preprocess
   fdim: 256
 
 manager:
-  url: http://192.168.11.181:3500
+  mlflow:
+    url: http://192.168.11.181:3500
+  clearml:
+    key_token: SVJ9QL5HWTZJRJEPKJ3L
+    secret_token: r3JtxXPU7PcPaQBtgBr8QOeRMR2ejsIAPlCn8uZtaLR0VoUkmI
   hparams:
     cnn_layers: *cnn_layers
 

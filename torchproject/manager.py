@@ -1,9 +1,21 @@
 import mlflow
-from typing import Union
+from clearml import Task, Logger, TaskTypes
+from typing import Union, List
 
+PROJECT_NAME = 'MyProject'
 
 class BaseManager:
-    def __init__(self):
+    def __init__(self, train=True):
+        """
+        train (bool): mode of experiment (train or test)
+        """
+        pass
+
+    def add_tags(self, tags:Union[List[str], dict]):
+        """
+        Tag might be str, like ['best']
+        or dict, like {'mode': 'train'}
+        """
         pass
 
     def log_step_metrics(self, metrics:dict, step:int):
@@ -12,10 +24,16 @@ class BaseManager:
         """
         pass
 
+    def log_epoch_metrics(self, metrics:dict, epoch:int):
+        """
+        Log epoch metrics for plot
+        """
+        pass
+
     def log_hyperparams(self, hparams:dict):
         pass
 
-    def log_summary_metrics(self, metrics:dict):
+    def log_summary_metrics(self, metrics:dict, type='best'):
         """
         Log average or best metrics
         """
@@ -27,10 +45,90 @@ class BaseManager:
         """
         pass
 
+    def set_status(self, status:str):
+        """
+        Some managers support statuses, like
+        finished or failed
+        Args:
+            status (str)
+        """
+        pass
+
+    def set_iterations(self, iterations:int):
+        """
+        Set number of train steps (for ex, epochs)
+        or test steps (number of test batches)
+        """
+        pass
+
+    def log_iteration(self, iteration:int):
+        """
+        Log iteration of train (for ex, epoch)
+        or test step (batch index)
+        """
+        pass
+
+
+class ClearMLManager(BaseManager):
+    def __init__(self, key_token:str, secret_token:str, 
+                 experiment='noname', 
+                 run_name:str="noname", 
+                 train:bool=True, 
+                 tags:dict={}):
+        Task.set_credentials(key=key_token, secret=secret_token)
+        task_type = TaskTypes.training if train else TaskTypes.testing
+        task_name = experiment + '_' + run_name
+        self.task = Task.init(project_name=PROJECT_NAME, 
+                              task_name=task_name, 
+                              task_type=task_type)
+        self.logger = Logger.current_logger()
+        self.max_step = 0
+        self.add_tags(tags)
+        
+    def log_hyperparams(self, hparams: dict):
+        self.task.connect(hparams, name='hparams')
+
+    def log_config(self, config: Union[dict, str], name='config.yaml'):
+        if not isinstance(config, str):
+            raise NotImplementedError()
+        self.task.connect_configuration(config, name=name)
+
+    def log_step_metrics(self, metrics: dict, step: int):
+        for metric_name, value in metrics.items():
+            self.logger.report_scalar(
+                title=metric_name, 
+                series='step', 
+                value=value, 
+                iteration=step
+        )
+        self.max_step = max(self.max_step, step)
+            
+    def log_epoch_metrics(self, metrics: dict, epoch: int):
+        for metric_name, value in metrics.items():
+            self.logger.report_scalar(
+                title=metric_name, 
+                series='epoch', 
+                value=value, 
+                iteration=epoch
+        )
+        self.max_step = max(self.max_step, epoch)
+
+    def log_summary_metrics(self, metrics: dict, type='best'):
+        for metric_name, value in metrics.items():
+            self.logger.report_scalar(
+                title=metric_name, 
+                series=type, 
+                value=value, 
+                iteration=self.max_step
+        )
+            
 
 class MLFlowManager(BaseManager):
-    def __init__(self, url:str, experiment='noname', 
-                run_name:str="noname", tags:dict={}):
+    def __init__(self, url:str, 
+                 experiment='noname', 
+                 run_name:str="noname",
+                 train:bool=True, 
+                 tags:dict={}):
         """
         url (str): For ex. 'http://192.168.11.181:3500'
         id (int): number of experiment run (Train-001)
@@ -45,6 +143,7 @@ class MLFlowManager(BaseManager):
         assert isinstance(self.exp_id, str)
 
         run_id = None  # to create new one
+        tags['mode'] = 'train' if train else 'test'
         run = mlflow.start_run(
             experiment_id=self.exp_id, 
             run_id=run_id, 
@@ -54,15 +153,19 @@ class MLFlowManager(BaseManager):
         )
         self.run_id = run.info.run_id
         self.max_step = 0
+        self.train = train
 
     def log_step_metrics(self, metrics:dict, step:int):
         mlflow.log_metrics(metrics, step=step)
         self.max_step = max(self.max_step, step)
 
+    def log_epoch_metrics(self, metrics:dict, epoch:int):
+        self.log_step_metrics(metrics, step=epoch)
+
     def log_hyperparams(self, hparams:dict):
         mlflow.log_params(hparams)
 
-    def log_summary_metrics(self, metrics:dict):
+    def log_summary_metrics(self, metrics:dict, type='best'):
         mlflow.log_metrics(metrics, step=self.max_step + 1)
     
     def log_dict(self, data:dict, fname:str):
@@ -98,6 +201,13 @@ class MLFlowManager(BaseManager):
             raise ValueError(f"Status must be one of {valid_statuses}")
         mlflow.end_run(status)
 
+    def set_iterations(self, iterations: int):
+        tag = 'epochs' if self.train else 'steps'
+        mlflow.set_tags({tag: iterations})
+
+    def log_iteration(self, iteration:int):
+        name = 'current_epoch' if self.train else 'step'
+        mlflow.set_tags({name: iteration})
 
 
 if __name__ == '__main__':
