@@ -24,8 +24,9 @@ manager:
   mlflow:
     url: http://192.168.11.181:3500
   clearml:
-    key_token: SVJ9QL5HWTZJRJEPKJ3L
-    secret_token: r3JtxXPU7PcPaQBtgBr8QOeRMR2ejsIAPlCn8uZtaLR0VoUkmI
+    key_token: R5V25ELMF8K44HN6ZDP8
+    secret_token: QJPm5a8Ef4L7Ag5QRuemh93RFEXHSdXaxnkwhM0dRwa0mtf9qE
+    subproject: False  # experiment format
   hparams:
     cnn_layers: *cnn_layers
 

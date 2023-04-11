@@ -70,7 +70,8 @@ def main(train_data:str,
          epochs:int=15,
          batch_size:int=20,
          experiment:str='experiment',
-         use_manager:bool=False,
+         use_mlflow:bool=False,
+         use_clearml:bool=False,
          tensorboard:bool=False,
          log_step:int=1,
     ):
@@ -95,7 +96,8 @@ def main(train_data:str,
              epochs=epochs,
              batch_size=batch_size,
              experiment=experiment,
-             use_manager=use_manager,
+             use_mlflow=use_mlflow,
+             use_clearml=use_clearml,
              tensorboard=tensorboard,
              log_step=log_step,
              comment=f'hypertune-{i+1}'
@@ -117,9 +119,12 @@ if __name__ == '__main__':
     parser.add_argument('--experiment', '-exp', type=None, 
                         default='experiment', 
                         help='Name of existed MLFlow experiment')
-    parser.add_argument('--manager', '-mng', action='store_true', 
-                        dest='use_manager', default=False, 
-                        help='whether to use ML experiment manager')
+    parser.add_argument('--mlflow', action='store_true', 
+                        dest='use_mlflow', default=False, 
+                        help='whether to use MLFlow for experiment manager')
+    parser.add_argument('--clearml', action='store_true', 
+                        dest='use_clearml', default=False, 
+                        help='whether to use ClearML for experiment manager')
     parser.add_argument('--tensorboard', '-tb', action='store_true', 
                         default=False, 
                         help='whether to use Tensorboard')

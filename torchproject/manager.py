@@ -2,7 +2,7 @@ import mlflow
 from clearml import Task, Logger, TaskTypes
 from typing import Union, List
 
-PROJECT_NAME = 'MyProject'
+PROJECT_NAME = 'OCR'
 
 class BaseManager:
     def __init__(self, train=True):
@@ -35,6 +35,7 @@ class BaseManager:
         pass
 
     def log_hyperparams(self, hparams:dict):
+        "Hyperparams are defined in config manager:hparams"
         pass
 
     def log_config(self, config:Union[dict, str], name='config.yaml'):
@@ -66,23 +67,37 @@ class BaseManager:
         """
         pass
 
+    def close(self):
+        """
+        Some managers require closing
+        """
+        pass
+
 
 class ClearMLManager(BaseManager):
     def __init__(self, key_token:str, secret_token:str, 
+                 subproject:bool=False,  # experiment format
                  experiment='noname', 
                  run_name:str="noname", 
                  train:bool=True, 
                  tags:dict={}):
         Task.set_credentials(key=key_token, secret=secret_token)
         task_type = TaskTypes.training if train else TaskTypes.testing
-        task_name = experiment + '_' + run_name
-        self.task = Task.init(project_name=PROJECT_NAME, 
+        if subproject:
+            project_name = PROJECT_NAME + '/' + experiment
+            task_name = run_name
+        else:
+            project_name = PROJECT_NAME
+            task_name = experiment + '_' + run_name
+        self.task = Task.init(project_name=project_name, 
                               task_name=task_name, 
-                              task_type=task_type)
+                              task_type=task_type,
+                              auto_connect_frameworks=False)
+        # Turn off auto saveing ML models and other artifacts
         self.logger = Logger.current_logger()
         self.max_step = 0
         self.add_tags(tags)
-        print(f"ClearML experiment: '{PROJECT_NAME}/{task_name}'")
+        print(f"ClearML experiment: '{project_name}/{task_name}'")
         
     def log_hyperparams(self, hparams: dict):
         self.task.connect(hparams, name='hparams')
@@ -114,6 +129,9 @@ class ClearMLManager(BaseManager):
         if isinstance(tags, dict):
             tags = list(tags.values())
         self.task.add_tags(tags)
+
+    def close(self):
+        self.task.close()
 
 
 class MLFlowManager(BaseManager):

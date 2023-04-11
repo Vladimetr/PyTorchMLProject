@@ -397,6 +397,7 @@ def main(train_data:str,
     if not no_save:
         if manager:
             manager.set_status("FINISHED")
+            manager.close()
         if tensorboard:
             writer_train.close()
             writer_test.close()

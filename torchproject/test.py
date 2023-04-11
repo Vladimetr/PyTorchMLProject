@@ -312,6 +312,7 @@ def main(data:str,
         print(f"{k}: {v}")
     if manager:
        manager.log_summary_metrics(avg_metrics)
+       manager.close()
 
     if writer: writer.close()
 
