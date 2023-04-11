@@ -137,7 +137,7 @@ def train_step(
     model.validate_grads()
 
     # metrics computing
-    metrics = {"loss": loss_value}
+    metrics = {"CrossEntropyLoss": loss_value}
     metrics_ = metrics_computer.compute(probs, target,
                                        accumulate=False)
     metrics.update(metrics_)
@@ -369,7 +369,7 @@ def main(train_data:str,
             print(f"{k}: {v}")
 
         if manager:
-            manager.log_epoch_metrics(metrics, epoch=ep)
+            manager.log_step_metrics(metrics, step=ep)
 
         # Сheck whether it's the best metrics
         if best_metrics is None or \

@@ -13,7 +13,7 @@ loss:
 
 test:
   model: cnn
-  metrics: ["loss", "TP", "FN", "FP", "TN"]
+  metrics: ["CrossEntropyLoss", "TP", "FN", "FP", "TN"]
   loss: cross_entropy
 
 preprocess: &preprocess
@@ -36,7 +36,7 @@ data:
 train:
   model: cnn
   loss: cross_entropy
-  metrics: ["loss", "TP", "FN"]
+  metrics: ["CrossEntropyLoss", "TP", "FN"]
   opt: Adam
   learning_rate: 0.0001
   weight_decay: 0.00001  # reg loss

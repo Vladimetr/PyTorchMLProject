@@ -181,6 +181,7 @@ class BinClassificationMetrics:
                 self.sum_metrics[k] = [v]
 
     def summary(self) -> dict:
+        """ Get average of accumulated metrics """
         avg_metrics = dict()
         for k, v in self.sum_metrics.items():
             avg_metrics[k] = sum(v) / len(v)

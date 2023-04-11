@@ -128,9 +128,10 @@ def test_step(
         raise Exception(message)
 
     # Metrics computing
-    metrics = {"loss": loss_value}
+    metrics = {"CrossEntropyLoss": loss_value}
     metrics_ = metrics_computer.compute(probs, target,
                                        accumulate=True)
+    metrics_computer.add_summary(metrics)
     metrics.update(metrics_)
     return metrics
 

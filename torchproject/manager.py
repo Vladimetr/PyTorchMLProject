@@ -20,23 +20,21 @@ class BaseManager:
 
     def log_step_metrics(self, metrics:dict, step:int):
         """
-        Log step metrics for plot
+        Log epoch metrics or test step metrics for plot
+        NOTE: Don't log a lot of metrics (more than 200 per experiment),
+        because it can slow down UI
+        NOTE: Loss can be stored in metrics dict with key "*Loss"
+        (for ex. "CrossEntropyLoss")
         """
         pass
 
-    def log_epoch_metrics(self, metrics:dict, epoch:int):
+    def log_summary_metrics(self, metrics:dict):
         """
-        Log epoch metrics for plot
+        Log average or best metrics
         """
         pass
 
     def log_hyperparams(self, hparams:dict):
-        pass
-
-    def log_summary_metrics(self, metrics:dict, type='best'):
-        """
-        Log average or best metrics
-        """
         pass
 
     def log_config(self, config:Union[dict, str], name='config.yaml'):
@@ -48,7 +46,7 @@ class BaseManager:
     def set_status(self, status:str):
         """
         Some managers support statuses, like
-        finished or failed
+        "Finished" or "Failed"
         Args:
             status (str)
         """
@@ -96,38 +94,27 @@ class ClearMLManager(BaseManager):
 
     def log_step_metrics(self, metrics: dict, step: int):
         for metric_name, value in metrics.items():
+            title = 'Metrics'
+            if 'Loss' in metric_name:
+                title = 'Loss'
+                metric_name = metric_name.replace('Loss', '')
             self.logger.report_scalar(
-                title=metric_name, 
-                series='step', 
+                title=title, 
+                series=metric_name, 
                 value=value, 
                 iteration=step
         )
         self.max_step = max(self.max_step, step)
             
-    def log_epoch_metrics(self, metrics: dict, epoch: int):
+    def log_summary_metrics(self, metrics: dict):
         for metric_name, value in metrics.items():
-            self.logger.report_scalar(
-                title=metric_name, 
-                series='epoch', 
-                value=value, 
-                iteration=epoch
-        )
-        self.max_step = max(self.max_step, epoch)
-
-    def log_summary_metrics(self, metrics: dict, type='best'):
-        for metric_name, value in metrics.items():
-            self.logger.report_scalar(
-                title=metric_name, 
-                series=type, 
-                value=value, 
-                iteration=self.max_step
-        )
+            self.logger.report_single_value(metric_name, value)
             
     def add_tags(self, tags:Union[List[str], dict]):
         if isinstance(tags, dict):
             tags = list(tags.values())
         self.task.add_tags(tags)
-            
+
 
 class MLFlowManager(BaseManager):
     def __init__(self, url:str, 
@@ -166,13 +153,10 @@ class MLFlowManager(BaseManager):
         mlflow.log_metrics(metrics, step=step)
         self.max_step = max(self.max_step, step)
 
-    def log_epoch_metrics(self, metrics:dict, epoch:int):
-        self.log_step_metrics(metrics, step=epoch)
-
     def log_hyperparams(self, hparams:dict):
         mlflow.log_params(hparams)
 
-    def log_summary_metrics(self, metrics:dict, type='best'):
+    def log_summary_metrics(self, metrics:dict):
         mlflow.log_metrics(metrics, step=self.max_step + 1)
     
     def log_dict(self, data:dict, fname:str):
