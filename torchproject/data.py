@@ -17,7 +17,8 @@ import torch.nn.functional as F
 class CudaDataLoader(DataLoader):
     # принимает экземпляр класса Dataset и Sampler
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, gpu_id:int=0, *args, **kwargs):
+        self.gpu_id = gpu_id
         super().__init__(*args, **kwargs)       # вызывает метод __init__
                                                 # родительского класса
 
@@ -32,7 +33,7 @@ class CudaDataLoader(DataLoader):
                 # if pin_memory==True -> non_blocking=True
                 if isinstance(values, torch.Tensor):
                     gpu.append(values.contiguous().cuda(
-                        0, non_blocking=True))
+                        self.gpu_id, non_blocking=True))
                 else:
                     gpu.append(values)
 
