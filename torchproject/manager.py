@@ -1,8 +1,12 @@
 import mlflow
 from clearml import Task, Logger, TaskTypes
 from typing import Union, List
+import torch
+import numpy as np
 
 PROJECT_NAME = 'OCR'
+
+matrix = Union[np.ndarray, torch.Tensor]
 
 class BaseManager:
     def __init__(self, train=True):
@@ -73,6 +77,24 @@ class BaseManager:
         """
         pass
 
+    def log_confusion_matrix(self, conf_matrix: matrix, 
+                             classes:List[str], step:int=None):
+        """
+        Some managers support logging confusion matrix
+        NOTE: xaxis="target" and yaxis="predict"
+        """
+        # validate confusion matrix
+        shape = matrix.shape
+        n_classes = len(classes)
+        if not (len(shape) == 2 and shape[0] == shape[1] == n_classes):
+            raise ValueError('Mismatch matrix shape and N classes')
+
+    def log_roc_curve(self, data):
+        """
+        Some managers support logging ROC curve
+        """
+        pass
+        
 
 class ClearMLManager(BaseManager):
     def __init__(self, key_token:str, secret_token:str, 
@@ -132,6 +154,20 @@ class ClearMLManager(BaseManager):
 
     def close(self):
         self.task.close()
+
+    def log_confusion_matrix(self, conf_matrix: matrix, 
+                             classes:List[str], step:int=None):
+        # validate input
+        super().log_confusion_matrix(conf_matrix, classes)
+        step = step or self.max_step
+        if isinstance(conf_matrix, torch.Tensor):
+            conf_matrix = conf_matrix.numpy()
+        self.logger.report_confusion_matrix(
+            "Confusion matrix", "ignored", 
+            iteration=step, matrix=conf_matrix,
+            xlabels=classes, ylabels=classes,
+            xaxis="target", yaxis="predict"
+        )
 
 
 class MLFlowManager(BaseManager):
