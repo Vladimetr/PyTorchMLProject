@@ -140,6 +140,7 @@ def test_step(
 def main(data:str,
          config:Union[str, dict]='config.yaml',
          batch_size:int=500,
+         gpu_id:int=0,
          no_save:bool=False,
          experiment:str='experiment',
          run_id:int=None,
@@ -169,6 +170,12 @@ def main(data:str,
     global manager
     if use_clearml and use_mlflow:
         raise ValueError("Choose either mlflow or clearml for management")
+
+    # Validate device
+    num_valid_gpus = torch.cuda.device_count()
+    if gpu_id >= num_valid_gpus:
+        raise ValueError(f"Only {num_valid_gpus} GPUs are available")
+    device = f"cuda:{gpu_id}"
 
     # Get reference to train RunID
     if run_id:
@@ -201,7 +208,8 @@ def main(data:str,
     test_set = MyDataset(data, params=data_params)
     data_size = len(test_set)
     sampler = BucketingSampler(test_set, batch_size, shuffle=data_shuffle)
-    test_set = CudaDataLoader(test_set, collate_fn=test_set.collate,
+    test_set = CudaDataLoader(gpu_id, test_set, 
+                              collate_fn=test_set.collate,
                               pin_memory=True, num_workers=4,
                               batch_sampler=sampler)
     test_steps = len(test_set)  # number of batches
@@ -279,12 +287,12 @@ def main(data:str,
     model = model_init(model_name,
                        model_params,
                        train=True,
-                       device="cuda:0")
+                       device=device)
 
     # Define loss
     loss_name = test_params["loss"]
     loss_params = config["loss"][loss_name]
-    loss = init_loss(loss_name, loss_params, device="cuda:0")
+    loss = init_loss(loss_name, loss_params, device=device)
 
     # Init test metrics computer
     compute_metrics = test_params["metrics"]
@@ -326,6 +334,8 @@ if __name__ == '__main__':
                         default='data/test_manifest.csv',
                         help='path/to/data')
     parser.add_argument('--batch_size', '-bs', type=int, default=20)
+    parser.add_argument('--gpu', type=int, dest="gpu_id", default=0,
+                        help='which GPU to use')
     parser.add_argument('--no-save', '-ns', action='store_true', 
                         default=False, 
                         help='no save results')
