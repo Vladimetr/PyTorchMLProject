@@ -47,8 +47,8 @@ python3 -m torchproject.train \
     --experiment 'my_experiment' \
     --mlflow
 ```
->NOTE: this experiment must be created in MLFlow Server
->NOTE: add `-v $PWD/dev/mlflow/data:/mlflow/mlruns` to run container
+>NOTE: this experiment must be created in MLFlow Server <br/>
+>NOTE: add `-v $PWD/dev/mlflow/data:/mlflow/mlruns` to running container which is used for train.py and test.py
 
 4.2. **Train experiment with ClearML** <br/>
 ```
