@@ -1,5 +1,5 @@
 """
-структура данных в PyTorch
+Data batching for train and test
 """
 import numpy as np
 import pandas as pd
@@ -10,8 +10,6 @@ from torch.utils.data import Dataset
 from torch.utils.data import DataLoader
 from torch.utils.data.sampler import Sampler
 import torch.nn.functional as F
-
-
 
 
 class CudaDataLoader(DataLoader):
@@ -176,4 +174,3 @@ if __name__ == '__main__':
                           pin_memory=True,
                           num_workers=1
     )
-    

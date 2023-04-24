@@ -26,7 +26,7 @@ manager:
   clearml:
     key_token: R5V25ELMF8K44HN6ZDP8
     secret_token: QJPm5a8Ef4L7Ag5QRuemh93RFEXHSdXaxnkwhM0dRwa0mtf9qE
-    subproject: False  # experiment format
+    subproject: True  # experiment format
   hparams:
     cnn_layers: *cnn_layers
 
