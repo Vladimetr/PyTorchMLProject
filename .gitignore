@@ -1,0 +1,12 @@
+.ipynb_checkpoints
+__pycache__/
+dev/
+models/__pycache__/
+data_parallel.py
+base_DistributedSampler.py
+grad_validator.py
+data/MNIST
+debug.py
+torch_serve/
+debug.py
+.git
