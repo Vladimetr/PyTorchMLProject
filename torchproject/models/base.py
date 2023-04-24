@@ -20,7 +20,7 @@ class Model(torch.nn.Module):
         F - feature dim
         C - n classes
         Args:
-            x (B, T, F): input
+            features (B, F, T): input features
         Returns:
             tuple
               (B, C): output logits

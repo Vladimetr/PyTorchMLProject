@@ -2,10 +2,11 @@ from .base import Model
 
 
 def model_init(name:str, params:dict, train=False, device="cpu") -> Model:
+    params = dict(params)  # copy
     weights = params.pop("weights")
-    if name == 'cnn':
-        from .cnn import CnnClassificator
-        model = CnnClassificator(**params)
+    if name == 'tcn':
+        from .tcn import TCNClassification
+        model = TCNClassification(**params)
     
     # another model
     else:

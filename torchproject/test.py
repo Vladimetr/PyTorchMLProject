@@ -11,7 +11,7 @@ from typing import Union
 import argparse
 from torch.utils.tensorboard import SummaryWriter
 from .models import Model
-from .data import CudaDataLoader, BucketingSampler, MyDataset
+from .data import CudaDataLoader, BucketingSampler, AudioDataset
 from . import utils
 from .manager import BaseManager, MLFlowManager, ClearMLManager
 from .models import model_init

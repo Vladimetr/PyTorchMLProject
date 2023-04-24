@@ -20,7 +20,7 @@ import argparse
 import torch
 from torch.utils.tensorboard import SummaryWriter
 from torch.nn.utils import clip_grad_norm_
-from .data import CudaDataLoader, BucketingSampler, MyDataset
+from .data import CudaDataLoader, BucketingSampler, AudioDataset
 from . import utils
 from .metrics import init_loss, BinClassificationMetrics
 from .models import Model, model_init
@@ -190,12 +190,14 @@ def main(train_data:str,
         config = utils.config_from_yaml(config_yaml)
     train_params = config["train"]
     test_params = config["test"]
-    data_params = config["data"]
+    preprocess_params = config["preprocess"]
     manager_params = config["manager"]
+    n_classes = config["n_classes"]
     train_logger, test_logger = None, None
 
     # Load train data
-    train_set = MyDataset(train_data, params=data_params)
+    train_set = AudioDataset(train_data, n_classes=n_classes, 
+                             preprocess_params=preprocess_params)
     train_data_size = len(train_set)
     sampler = BucketingSampler(train_set, batch_size, shuffle=data_shuffle)
     train_set = CudaDataLoader(gpu_id, train_set, 
@@ -205,7 +207,8 @@ def main(train_data:str,
     train_steps = len(train_set)  # number of train batches
 
     # Load test data
-    test_set = MyDataset(test_data, params=data_params)
+    test_set = AudioDataset(test_data, n_classes=n_classes,
+                            preprocess_params=preprocess_params)
     test_data_size = len(test_set)
     sampler = BucketingSampler(test_set, batch_size, shuffle=data_shuffle)
     test_set = CudaDataLoader(gpu_id, test_set, 
@@ -276,8 +279,8 @@ def main(train_data:str,
             print(f"Manager experiment run name: {'train-' + run_name}")
 
     # Define model
-    model_name = train_params["model"]
-    model_params = config["model"][model_name]
+    model_name = config["model"]
+    model_params = config["models"][model_name]
     model_params["weights"] = train_params["pretrained"] 
     # None of path/to/model.pt
     model = model_init(model_name,
@@ -397,14 +400,12 @@ def main(train_data:str,
     print("Best metrics:")
     for k, v in best_metrics.items():
         print(f"{k}: {v}")
-    config["model"][model_name]["weights"] = best_weights_path
-    utils.dict2yaml(config, config_yaml)
-    if manager:
-        manager.log_summary_metrics(best_metrics)
-        manager.log_config(config_yaml)
-
     if not no_save:
+        config["model"][model_name]["weights"] = best_weights_path
+        utils.dict2yaml(config, config_yaml)
         if manager:
+            manager.log_summary_metrics(best_metrics)
+            manager.log_config(config_yaml)
             manager.set_status("FINISHED")
             manager.close()
         if tensorboard:
@@ -419,9 +420,9 @@ if __name__ == '__main__':
                         default='config.yaml', 
                         help='path/to/config.yaml')
     parser.add_argument('--train-data', type=str, 
-                        default='data/train_manifest.csv')
+                        default='data/processed/train_manifest.v1.csv')
     parser.add_argument('--test-data', type=str, 
-                        default='data/test_manifest.csv')
+                        default='data/processed/test_manifest.v1.csv')
     parser.add_argument('--batch-size', '-bs', type=int, 
                         default=100)
     parser.add_argument('--gpu', type=int, dest="gpu_id", default=0,
