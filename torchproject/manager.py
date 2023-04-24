@@ -149,7 +149,8 @@ class ClearMLManager(BaseManager):
             
     def add_tags(self, tags:Union[List[str], dict]):
         if isinstance(tags, dict):
-            tags = list(tags.values())
+            tags = tags.values()
+        tags = list(map(str, tags))
         self.task.add_tags(tags)
 
     def close(self):
@@ -256,10 +257,14 @@ class MLFlowManager(BaseManager):
 
 
 if __name__ == '__main__':
-    url = 'http://192.168.11.181:3500'
+    params = {
+        'key_token': 'R5V25ELMF8K44HN6ZDP8',
+        'secret_token': 'QJPm5a8Ef4L7Ag5QRuemh93RFEXHSdXaxnkwhM0dRwa0mtf9qE',
+        'subproject': True  # experiment format
+    }
     experiment = 'experiment'
     run_name = 'train-debug'
-    manager = MLFlowManager(url, experiment, run_name)
+    manager = ClearMLManager(**params, experiment='OCR/decoder-with-lm', run_name='example')
 
     manager.log_config('config.yaml')
     tags = {
