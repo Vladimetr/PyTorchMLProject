@@ -15,7 +15,7 @@ from .data import CudaDataLoader, BucketingSampler, AudioDataset
 from . import utils
 from .manager import BaseManager, MLFlowManager, ClearMLManager
 from .models import model_init
-from .metrics import init_loss, BinClassificationMetrics
+from .metrics import init_loss, BinClassificationMetrics, Loss
 from .utils import EXPERIMENTS_DIR, TB_LOGS_DIR
 
 manager = None
@@ -109,7 +109,7 @@ def status_handler(func):
 def test_step(
         model:Model,
         batch:tuple,
-        loss,
+        loss:Loss,
         metrics_computer:BinClassificationMetrics,
         ) -> dict:
     x, target = batch
@@ -119,7 +119,9 @@ def test_step(
     # probs - after activation   (for acc)
 
     # CrossEntropy loss
-    output = loss(logits, target.float())  # is graph (for backward)
+    loss_dict = loss(logits, target.float())  # dict
+    loss_name = list(loss_dict.keys())[0]
+    output = loss_dict[loss_name]  # is graph (for backward)
     loss_value = output.item()     # is float32
 
     # Check if loss is nan
@@ -128,7 +130,7 @@ def test_step(
         raise Exception(message)
 
     # Metrics computing
-    metrics = {"CrossEntropyLoss": loss_value}
+    metrics = {loss_name: loss_value}
     metrics_ = metrics_computer.compute(probs, target,
                                        accumulate=True)
     metrics_computer.add_summary(metrics)

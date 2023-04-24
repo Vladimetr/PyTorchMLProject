@@ -22,7 +22,7 @@ from torch.utils.tensorboard import SummaryWriter
 from torch.nn.utils import clip_grad_norm_
 from .data import CudaDataLoader, BucketingSampler, AudioDataset
 from . import utils
-from .metrics import init_loss, BinClassificationMetrics
+from .metrics import init_loss, BinClassificationMetrics, Loss
 from .models import Model, model_init
 from .manager import MLFlowManager, ClearMLManager
 from .test import test_step
@@ -98,7 +98,7 @@ def train_step(
         model:Model,
         batch:tuple,
         optimizer,
-        loss,
+        loss:Loss,
         metrics_computer:BinClassificationMetrics,
         train_params:dict,
         ) -> dict:
@@ -112,8 +112,9 @@ def train_step(
     # logits - before activation (for loss)
     # probs - after activation   (for acc)
 
-    # CrossEntropy loss
-    output = loss(logits, target.float())  # is graph (for backward)
+    loss_dict = loss(logits, target.float())  # dict
+    loss_name = list(loss_dict.keys())[0]
+    output = loss_dict[loss_name]  # is graph (for backward)
     loss_value = output.item()     # is float32
 
     # Check if loss is nan
@@ -137,7 +138,7 @@ def train_step(
     model.validate_grads()
 
     # metrics computing
-    metrics = {"CrossEntropyLoss": loss_value}
+    metrics = {loss_name: loss_value}
     metrics_ = metrics_computer.compute(probs, target,
                                        accumulate=False)
     metrics.update(metrics_)

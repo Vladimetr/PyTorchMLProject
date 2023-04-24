@@ -1,12 +1,12 @@
 from collections import OrderedDict
 from abc import ABCMeta, abstractmethod
 import torch
-
+from  torch import Tensor
 
 class Loss(metaclass=ABCMeta):
     """ Abstract Loss """
     @abstractmethod
-    def __init__(self, n_classes, device='cpu'):
+    def __init__(self, device='cpu', *args, **kwargs):
         """
         Base parameters
         n_classes (int): number of classes
@@ -15,7 +15,7 @@ class Loss(metaclass=ABCMeta):
         pass
 
     @abstractmethod
-    def __call__(self, pred:torch.Tensor, targ:torch.Tensor):
+    def __call__(self, pred:Tensor, targ:Tensor) -> dict:
         """
         B - batch size
         C - n classes
@@ -23,16 +23,28 @@ class Loss(metaclass=ABCMeta):
             pred (B, C):
             targ (B, )): 
         Returns:
-            torch.Tensor (1): mean loss across batch
+            dict: {'{NameLoss}': torch.Tensor(1) mean loss across batch}
+        NOTE: '{NameLoss}' must end with '*Loss'
         """
         pass
 
 
+class CrossEntropyLoss(Loss):
+    def __init__(self, device='cpu', weights=None):
+        if isinstance(weights, list):
+            weights = torch.tensor(weights)
+        self.loss = torch.nn.BCEWithLogitsLoss(pos_weight=weights)
+        self.loss = self.loss.to(device)
+
+    def __call__(self, pred: Tensor, targ: Tensor) -> dict:
+        loss = self.loss(pred, targ)
+        name = "CrossEntropyLoss"
+        return {name: loss}
+
+
 def init_loss(name:str, params:dict, device='cpu') -> Loss:
     if name == 'cross_entropy':
-        params = dict(params)  # copy
-        params["pos_weight"] = torch.tensor(params["pos_weight"])
-        loss = torch.nn.BCEWithLogitsLoss(**params).to(device)
+        loss = CrossEntropyLoss(device=device, **params)
         
     # another loss
     else:
