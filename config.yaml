@@ -19,7 +19,7 @@ model: tcn  # model
 
 loss: 
   cross_entropy:
-    pos_weight: [0.8, 0.2]
+    weights: [0.8, 0.2]
 
 test:
   metrics: ["CrossEntropyLoss", "TP", "FN", "FP", "TN"]

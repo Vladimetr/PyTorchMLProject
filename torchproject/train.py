@@ -402,7 +402,7 @@ def main(train_data:str,
     for k, v in best_metrics.items():
         print(f"{k}: {v}")
     if not no_save:
-        config["model"][model_name]["weights"] = best_weights_path
+        model_params["weights"] = best_weights_path
         utils.dict2yaml(config, config_yaml)
         if manager:
             manager.log_summary_metrics(best_metrics)

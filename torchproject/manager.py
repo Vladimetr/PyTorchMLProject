@@ -4,7 +4,7 @@ from typing import Union, List
 import torch
 import numpy as np
 
-PROJECT_NAME = 'OCR'
+PROJECT_NAME = 'VAD'
 
 matrix = Union[np.ndarray, torch.Tensor]
 

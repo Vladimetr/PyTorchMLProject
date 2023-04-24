@@ -123,7 +123,7 @@ class AudioDataset(Dataset):
         # load npy
         sample = np.memmap(npy_path, dtype='float32',
                            mode='r', shape=(shape, ))
-        sample = torch.from_numpy(sample).view(1, -1)
+        sample = torch.tensor(sample).view(1, -1)
         sample = sample[:, start:end]
 
         # features extraction
@@ -133,7 +133,6 @@ class AudioDataset(Dataset):
                                 features=features, chunk=self.frame
         )
         # (N, F, T)
-        print(framed_features.shape)
 
         return framed_features, int(label)
     
