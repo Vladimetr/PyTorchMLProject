@@ -14,6 +14,13 @@ models:
     kernel_size: 5
     dropout: 0.1
     weights: './dev/models/Mar04_initial-and-pseudo-data_003/weights/ep_10.pt'
+    features:  # {'name': {params}} or null
+      logmel:
+        sr: *sr
+        wnd_step: 0.008
+        wnd_len: 0.010
+        nfilt: 40   # F
+        nfft: 512
 
 model: tcn  # model 
 
@@ -31,14 +38,14 @@ preprocess:
   min_dur: 0.2  # sec
   max_dur: 300  # sec
   format: wav
-  frame: *frame  # split on frames
-  features:  # {'name': {params}} or None
-    logmel:
-      sr: *sr
-      wnd_step: 0.008
-      wnd_len: 0.010
-      nfilt: 40   # F
-      nfft: 512
+  frame: *frame   # split on frames
+  features: null  # {'name': {params}} or null
+    # logmel:
+    #   sr: *sr
+    #   wnd_step: 0.008
+    #   wnd_len: 0.010
+    #   nfilt: 40   # F
+    #   nfft: 512
 
 manager:
   mlflow:

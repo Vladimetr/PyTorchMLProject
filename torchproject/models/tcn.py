@@ -81,7 +81,8 @@ class TemporalConvNet(nn.Module):
 
 class TCNClassification(Model):
     def __init__(self, timesteps, in_channels, channels, n_classes=3, 
-                 kernel_size=3, hidden_dim=100, dropout=0.2):
+                 kernel_size=3, hidden_dim=100, dropout=0.2,
+                 *args, **kwargs):
         """
         This classificator works for single frame (F, T)
         Frames in batch (B, N, F, Tfr) will be computed undependently, 
@@ -94,7 +95,7 @@ class TCNClassification(Model):
             in_channels: feature dim F in input
             n_classes: number of classes C in output
         """
-        super(TCNClassification, self).__init__()
+        super(TCNClassification, self).__init__(*args, **kwargs)
         self.tcn = TemporalConvNet(in_channels, channels, kernel_size, dropout)
         self.out_dim = timesteps*channels[-1]
         self.fc1 = nn.Linear(self.out_dim, hidden_dim)
@@ -112,11 +113,15 @@ class TCNClassification(Model):
         T - time dim
         C - n classes
         Args:
-            x: (B, F, T)
+            features (B, F, T): input features
+            or
+            sample (B, 1, S): raw sample
         Return:
             tuple:
                 logits, probs: (B, C)
         """
+        x = super().forward(x)
+        # (B, F, T)
         x = self.tcn(x)                # (_, C[-1], T)
         x = x.view(-1, self.out_dim)   # (_, C[-1]*T)
         x = self.fc1(x)                # (_, C)
