@@ -125,8 +125,6 @@ class ClearMLManager(BaseManager):
         self.task.connect(hparams, name='hparams')
 
     def log_config(self, config: Union[dict, str], name='config.yaml'):
-        if not isinstance(config, str):
-            raise NotImplementedError()
         self.task.connect_configuration(config, name=name)
 
     def log_step_metrics(self, metrics: dict, step: int):
