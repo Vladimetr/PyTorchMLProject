@@ -3,13 +3,13 @@ ClearML first experiment
 Пошаговый гайд по тому, как провести эксперимент, используя ClearML
 
 1. Зайти в интерфейс (http://192.168.11.181:8080) и ввести имя, от которого будут проводиться ваши эксперименты. <br/>
-<img src="images/autorization.png"  width="40%" height="40%">
+<img src="img/autorization.png"  width="40%" height="40%">
 
 2. В настройках пользователя (cправа в углу) <br/>
-<img src="images/settings.png"  width="20%" height="20%">
+<img src="img/settings.png"  width="20%" height="20%">
 <br/>
 перейти в вкладу workspace и "+ Create new credentials" <br/>
-<img src="images/credentials.png"  width="60%" height="60%">
+<img src="img/credentials.png"  width="60%" height="60%">
 <br/>
 Скопировать и сохранить данную конфигурацию (код)
 
@@ -26,9 +26,9 @@ cleaml-init
 4.2. Если и это не сработает, то нужно взять шаблон файла `dev/clearml.conf`, занести в него конфигурацию из п.2 и скопировать этот файл в `/home/user/`. И переходить к п.6
 
 5. После запуска команды (4) попросят скопировать конфигурацию из п.2
-<img src="images/config.png"  width="90%" height="90%">
+<img src="img/config.png"  width="90%" height="90%">
 <br/>
-<img src="images/config2.png"  width="90%" height="90%">
+<img src="img/config2.png"  width="90%" height="90%">
 <br/>
 В результате в конце будет такой вывод:
 ```
