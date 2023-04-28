@@ -4,26 +4,26 @@ Workers & Queues in ClearML
 Есть возможность добавлять эксперименты в очередь (queue) и ставить очередь на исполнение (worker-ом).
 1. Создать свою очередь (у каждого пользователя будет своя очередь). В интерфейсе во вкладке `Workers&Queues -> Queues -> "+ NEW QUEUE"`
 <br/>
-<img src="images/new_queue.png"  width="90%" height="90%"> 
+<img src="img/new_queue.png"  width="90%" height="90%"> 
 <br/>
 2. Имея завершенный без ошибок эксперимент склонировать его и задать имя.
-<img src="images/clone.png"  width="90%" height="90%">
+<img src="img/clone.png"  width="90%" height="90%">
 Склонированный эксперимент будет иметь статус **draft**. Эксперименты с таким статусом можно ставить в очередь на выполнение. 
 <br/>
 3. В draft эксперименте поменяем нужные параметры (args, hparams, docker args и др.)
-<img src="images/change-params.png"  width="100%" height="100%">
+<img src="img/change-params.png"  width="100%" height="100%">
 Необходимо также заполнить поля конфигурации контейнера. Указать docker image и аргументы запуска, а именно `-v -w --user`. <br/>
 ВАЖНО: GPU устанавливаются в другом месте <br/>
-<img src="images/docker-args.png"  width="100%" height="100%">
+<img src="img/docker-args.png"  width="100%" height="100%">
 
 После чего ставим эксперимент в очередь на выполнение
-<img src="images/enqueue.png"  width="90%" height="90%">
+<img src="img/enqueue.png"  width="90%" height="90%">
 <br/>
 эксперимент, находящийся в очереди на выполнение имеет статус **pending**
 
 ## Workers
 Worker является исполнителем экспериментов в данной очереди. У worker-а в распоряжении есть список доступных GPU. 
-<img src="images/agent.jpg"  width="80%" height="80%">
+<img src="img/agent.jpg"  width="80%" height="80%">
 <br/>
 Создать worker-а и указать для него очередь на выполнение можно двумя способами:
 ###  СПОСОБ 1
@@ -44,4 +44,4 @@ clearml-agent daemon --queue alex_queue --detached --docker alex_image:latest
 python3 train.py --batch-size 100 ... --gpus 1,2
 ``` 
 >ЗАМЕЧАНИЕ: таким способом можно изменять номера GPU в самом эксперименте (в графе args) и перезапускать обучение на других картах прям в интерфейсе - без консоли.
-<img src="images/gpu-args.png"  width="100%" height="100%">
+<img src="img/gpu-args.png"  width="100%" height="100%">
