@@ -13,7 +13,7 @@ models:
     n_classes: *n_classes
     kernel_size: 5
     dropout: 0.1
-    weights: './dev/models/Mar04_initial-and-pseudo-data_003/weights/ep_10.pt'
+    weights: '/mnt/nvme/vovik/tutorial/torch_project/dev/experiments/test-experiment/train/075/weights/1.pt'
     features:  # {'name': {params}} or null
       logmel:
         sr: *sr
@@ -22,15 +22,12 @@ models:
         nfilt: 40   # F
         nfft: 512
 
-model: tcn  # model 
+# what model to use
+model: &model tcn
 
 loss: 
   cross_entropy:
     weights: [0.8, 0.2]
-
-test:
-  metrics: ["CrossEntropyLoss", "TP", "FN", "FP", "TN"]
-  loss: cross_entropy
 
 preprocess:
   sr: *sr
@@ -47,6 +44,19 @@ preprocess:
     #   nfilt: 40   # F
     #   nfft: 512
 
+train:
+  loss: cross_entropy
+  metrics: ["CrossEntropyLoss", "Precision", "Recall"]
+  opt: &opt Adam
+  learning_rate: &lr 0.0001
+  weight_decay: 0.00001  # reg loss
+  grad_norm: 2.0
+  pretrained: ''
+
+test:
+  metrics: ["CrossEntropyLoss", "Precision", "Recall", "Acc"]
+  loss: cross_entropy
+
 manager:
   mlflow:
     url: http://192.168.11.181:3500
@@ -55,13 +65,7 @@ manager:
     secret_token: QJPm5a8Ef4L7Ag5QRuemh93RFEXHSdXaxnkwhM0dRwa0mtf9qE
     subproject: True  # experiment format
   hparams:
-    channels: [64, 32, 16]
-
-train:
-  loss: cross_entropy
-  metrics: ["CrossEntropyLoss", "TP", "FN"]
-  opt: Adam
-  learning_rate: 0.0001
-  weight_decay: 0.00001  # reg loss
-  grad_norm: 1.0
-  pretrained: ''
+    model: *model
+    train:
+      opt: *opt
+      learning_rate: *lr

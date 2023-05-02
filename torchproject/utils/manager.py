@@ -1,3 +1,4 @@
+import os.path as osp
 import mlflow
 from clearml import Task, Logger, TaskTypes
 from typing import Union, List
@@ -15,10 +16,12 @@ class BaseManager:
         """
         pass
 
-    def add_tags(self, tags:Union[List[str], dict]):
+    def add_tags(self, tags:Union[List[str], dict], rewrite=False):
         """
         Tag might be str, like ['best']
         or dict, like {'mode': 'train'}
+        Args:
+            rewrite (bool): whether to delete previous tags
         """
         pass
 
@@ -38,13 +41,28 @@ class BaseManager:
         """
         pass
 
-    def log_hyperparams(self, hparams:dict):
-        "Hyperparams are defined in config manager:hparams"
+    def log_hyperparams(self, hparams:dict) -> dict:
+        """ Hyperparams are defined in config manager:hparams
+        NOTE: Some managers like ClearML allow to update hparams
+        in UI. So this method returns updated hparams to set them
+        in train.py
+        """
         pass
 
-    def log_config(self, config:Union[dict, str], name='config.yaml'):
+    def log_config(self, config:Union[dict, str], name='config.yaml'
+                   ) -> Union[dict, str]:
         """
         Log config dict or config.yaml
+        NOTE: Some managers like ClearML allow to update config
+        in UI. So this method returns updated config to set it
+        in train.py
+        """
+        pass
+
+    def log_metadata(self, metadata:dict):
+        """ Additional static (unchangable) metadata like
+        - experiment storage
+        - train steps
         """
         pass
 
@@ -115,17 +133,25 @@ class ClearMLManager(BaseManager):
                               task_name=task_name, 
                               task_type=task_type,
                               auto_connect_frameworks=False)
+        self.task.rename(task_name)  # if it was renamed
         # Turn off auto saveing ML models and other artifacts
         self.logger = Logger.current_logger()
         self.max_step = 0
         self.add_tags(tags)
         print(f"ClearML experiment: '{project_name}/{task_name}'")
         
-    def log_hyperparams(self, hparams: dict):
-        self.task.connect(hparams, name='hparams')
+    def log_hyperparams(self, hparams: dict) -> dict:
+        hparams = self.task.connect(hparams, name='hparams')
+        return hparams
 
-    def log_config(self, config: Union[dict, str], name='config.yaml'):
-        self.task.connect_configuration(config, name=name)
+    def log_config(self, config: Union[dict, str]) -> Union[dict, str]:
+        config = self.task.connect_configuration(config, 
+                                                 name='config.yaml')
+        return config
+    
+    def log_metadata(self, metadata:dict):
+        self.task.set_configuration_object(name='meta.yaml', 
+                                           config_dict=metadata)
 
     def log_step_metrics(self, metrics: dict, step: int):
         for metric_name, value in metrics.items():
@@ -145,11 +171,14 @@ class ClearMLManager(BaseManager):
         for metric_name, value in metrics.items():
             self.logger.report_single_value(metric_name, value)
             
-    def add_tags(self, tags:Union[List[str], dict]):
+    def add_tags(self, tags:Union[List[str], dict], rewrite=False):
         if isinstance(tags, dict):
             tags = tags.values()
         tags = list(map(str, tags))
-        self.task.add_tags(tags)
+        if rewrite:
+            self.task.set_tags(tags)
+        else:
+            self.task.add_tags(tags)
 
     def close(self):
         self.task.close()
@@ -206,25 +235,24 @@ class MLFlowManager(BaseManager):
         mlflow.log_metrics(metrics, step=step)
         self.max_step = max(self.max_step, step)
 
-    def log_hyperparams(self, hparams:dict):
+    def log_hyperparams(self, hparams:dict) -> dict:
         mlflow.log_params(hparams)
+        return hparams
 
     def log_summary_metrics(self, metrics:dict):
         mlflow.log_metrics(metrics, step=self.max_step + 1)
     
-    def log_dict(self, data:dict, fname:str):
-        mlflow.log_dict(data, fname)
+    def log_metadata(self, metadata: dict):
+        mlflow.log_dict(metadata, 'meta.yaml')
 
-    def log_file(self, fpath:str, subdir:str=None):
-        mlflow.log_artifact(fpath, subdir)
-
-    def log_config(self, config: Union[dict, str], name='config.yaml'):
+    def log_config(self, config: Union[dict, str]) -> Union[dict, str]:
         if isinstance(config, dict):
-            self.log_dict(config, name)
+            mlflow.log_dict(config, 'config.yaml')
         else:
-            self.log_file(config)
-
-    def add_tags(self, tags:dict):
+            mlflow.log_artifact(config)
+        return config
+    
+    def add_tags(self, tags:dict, rewrite=False):
         """
         If tag name already exists, it will be rewritten
         """

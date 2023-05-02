@@ -23,8 +23,12 @@ class Loss(metaclass=ABCMeta):
             pred (B, C):
             targ (B, )): 
         Returns:
-            dict: {'{NameLoss}': torch.Tensor(1) mean loss across batch}
-        NOTE: '{NameLoss}' must end with '*Loss'
+            tuple:
+              loss: object with method backward()
+              dict: {'<NameLoss>': float}
+        NOTE: loss object for backward is only one. 
+        But dict can contain multiple key:values
+        NOTE: <NameLoss> must end with '*Loss'
         """
         pass
 
@@ -32,14 +36,17 @@ class Loss(metaclass=ABCMeta):
 class CrossEntropyLoss(Loss):
     def __init__(self, device='cpu', weights=None):
         if isinstance(weights, list):
-            weights = torch.tensor(weights)
+            weights = Tensor(weights)
         self.loss = torch.nn.BCEWithLogitsLoss(pos_weight=weights)
         self.loss = self.loss.to(device)
 
-    def __call__(self, pred: Tensor, targ: Tensor) -> dict:
+    def __call__(self, pred: Tensor, targ: Tensor) -> tuple:
         loss = self.loss(pred, targ)
-        name = "CrossEntropyLoss"
-        return {name: loss}
+        ce_value = loss.item()  # float
+        loss_values = {
+            "CrossEntropyLoss": ce_value,
+        }
+        return loss, loss_values
 
 
 def init_loss(name:str, params:dict, device='cpu') -> Loss:
@@ -57,8 +64,9 @@ class BinClassificationMetrics:
     def __init__(self, compute_metrics:list, logger=None,
                  epoch=False, step=False):
         """
-        n_classes (int): number of classes C
         compute_metrics (list[str]): order of metrics to compute
+        epoch (bool): whether to log epoch
+        step (bool): whether to log step
         """
         self.compute_metrics = compute_metrics
         self.metrics_funcs = {
@@ -66,6 +74,9 @@ class BinClassificationMetrics:
             "FN": self.fn,
             "TN": self.tn,
             "FP": self.fp,
+            "Acc": self.accuracy,
+            "Recall": self.recall,  # TPR
+            "Precision": self.precison,
 
         }
         self.reset_summary()
@@ -83,7 +94,8 @@ class BinClassificationMetrics:
         self.step = step
         
     @staticmethod
-    def tp(pred:torch.Tensor, targ:torch.Tensor) -> float:
+    def tp(pred:Tensor, targ:Tensor,
+           precomputed:dict=None) -> int:
         """
         True positive
         Args:
@@ -92,11 +104,17 @@ class BinClassificationMetrics:
         Returns:
             int: true positive
         """
-        tp = torch.sum(torch.logical_and(pred == 1, targ == 1)).item()
+        try:
+            conf_matrix = precomputed["conf_matrix"]
+        except (TypeError, KeyError):
+            tp = torch.sum(torch.logical_and(pred == 1, targ == 1)).item()
+        else:
+            tp = conf_matrix[1, 1].item()
         return tp
     
     @staticmethod
-    def tn(pred:torch.Tensor, targ:torch.Tensor) -> float:
+    def tn(pred:Tensor, targ:Tensor,
+           precomputed:dict=None) -> int:
         """
         True negative
         Args:
@@ -105,11 +123,17 @@ class BinClassificationMetrics:
         Returns:
             int: true negative
         """
-        tn = torch.sum(torch.logical_and(pred == 0, targ == 0)).item()
+        try:
+            conf_matrix = precomputed["conf_matrix"]
+        except (TypeError, KeyError):
+            tn = torch.sum(torch.logical_and(pred == 0, targ == 0)).item()
+        else:
+            tn = conf_matrix[0, 0].item()
         return tn
     
     @staticmethod
-    def fp(pred:torch.Tensor, targ:torch.Tensor) -> float:
+    def fp(pred:Tensor, targ:Tensor,
+           precomputed:dict=None) -> int:
         """
         False positive
         Args:
@@ -118,11 +142,17 @@ class BinClassificationMetrics:
         Returns:
             int: false positive
         """
-        fp = torch.sum(torch.logical_and(pred == 1, targ == 0)).item()
+        try:
+            conf_matrix = precomputed["conf_matrix"]
+        except (TypeError, KeyError):
+            fp = torch.sum(torch.logical_and(pred == 1, targ == 0)).item()
+        else:
+            fp = conf_matrix[1, 0].item()
         return fp
     
     @staticmethod
-    def fn(pred:torch.Tensor, targ:torch.Tensor) -> float:
+    def fn(pred:Tensor, targ:Tensor,
+           precomputed:dict=None) -> int:
         """
         False positive
         Args:
@@ -131,10 +161,85 @@ class BinClassificationMetrics:
         Returns:
             int: false negative
         """
-        fn = torch.sum(torch.logical_and(pred == 0, targ == 1)).item()
+        try:
+            conf_matrix = precomputed["conf_matrix"]
+        except (TypeError, KeyError):
+            fn = torch.sum(torch.logical_and(pred == 0, targ == 1)).item()
+        else:
+            fn = conf_matrix[0, 1].item()
         return fn
 
-    def compute(self, probs:torch.Tensor, targ:torch.Tensor,
+    def conf_matrix(self, pred:Tensor, targ:Tensor,
+                    precomputed:dict=None) -> Tensor:
+        """
+        | TN | FN |
+        | FP | TP |
+        Args:
+            pred (B, ): indexes of pred classes
+            targ (B, ): indexes of targ classes
+        Returns:
+            Tensor (2, 2)
+        """
+        if not precomputed:
+            precomputed = dict()
+        tn = precomputed.get("TN", self.tn(pred, targ))
+        fn = precomputed.get("FN", self.fn(pred, targ))
+        fp = precomputed.get("FP", self.fp(pred, targ))
+        tp = precomputed.get("TP", self.tp(pred, targ))
+        conf_matrix = torch.tensor(
+            [[tn, fn],
+             [fp, tp]],
+            dtype=torch.int
+        )
+        return conf_matrix
+
+    def accuracy(self, pred:Tensor, targ:Tensor, 
+                 precomputed:dict=None) -> float:
+        """ (TP + TN) / Total """
+        try:
+            conf_matrix = precomputed["conf_matrix"]
+        except (TypeError, KeyError):
+            conf_matrix = self.conf_matrix(pred, targ)
+        tn = conf_matrix[0, 0].item()
+        tp = conf_matrix[1, 1].item()
+        s = conf_matrix.sum().item()
+        try:
+            acc = (tn + tp) / s
+        except ZeroDivisionError:
+            return -1
+        return acc
+    
+    def precison(self, pred:Tensor, targ:Tensor, 
+                 precomputed:dict=None) -> float:
+        """ TPR = TP / (TP + FP) """
+        try:
+            conf_matrix = precomputed["conf_matrix"]
+        except (TypeError, KeyError):
+            conf_matrix = self.conf_matrix(pred, targ)
+        tp = conf_matrix[1, 1].item()
+        fp = conf_matrix[1, 0].item()
+        try:
+            prec = tp / (tp + fp)
+        except ZeroDivisionError:
+            return -1
+        return prec
+    
+    def recall(self, pred:Tensor, targ:Tensor, 
+               precomputed:dict=None) -> float:
+        """ TPR = TP / (TP + FN) """
+        try:
+            conf_matrix = precomputed["conf_matrix"]
+        except (TypeError, KeyError):
+            conf_matrix = self.conf_matrix(pred, targ)
+        tp = conf_matrix[1, 1].item()
+        fn = conf_matrix[0, 1].item()
+        try:
+            rec = tp / (tp + fn)
+        except ZeroDivisionError:
+            return -1
+        return rec
+
+    def compute(self, probs:Tensor, targ:Tensor,
                 accumulate=False) -> dict:
         """
         B - batch size
@@ -149,13 +254,18 @@ class BinClassificationMetrics:
         pred = torch.max(probs, dim=1)[1]  # (B, )
         # one-hot to indexes
         targ = torch.argmax(targ, dim=1)  # (B, )
-
-        metrics = OrderedDict()
+        conf_matrix = self.conf_matrix(pred, targ)
+        metrics = OrderedDict({
+            "conf_matrix": conf_matrix
+        })
         for name in self.compute_metrics:
             try:
-                metrics[name] = self.metrics_funcs[name](pred, targ)
+                func = self.metrics_funcs[name]
+                metrics[name] = func(pred=None, targ=None,
+                                     precomputed=metrics)
             except KeyError:
                 continue
+        metrics.pop("conf_matrix")
         if accumulate:
             self.add_summary(metrics)
         return metrics
@@ -211,3 +321,19 @@ class BinClassificationMetrics:
         if line:
             return " | ".join(msg)
         return "\n".join(msg)
+
+
+if __name__ == '__main__':
+    metrics_computer = BinClassificationMetrics(
+        compute_metrics=["Acc", "Precision", "Recall"],
+    )
+    probs = torch.tensor(
+        [[.1, .4, .7, .9, .2, 0, .2],
+         [.9, .6, .3, .1, .8, 1, .8]]
+    ).transpose(0, 1)
+    targ = torch.tensor(
+        [[0, 1, 1, 1, 1, 1, 0],
+         [1, 0, 0, 0, 0, 0, 1]]
+    ).transpose(0, 1)
+    metrics = metrics_computer.compute(probs, targ)
+    print(metrics)
