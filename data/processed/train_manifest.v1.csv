@@ -1,0 +1,5 @@
+path shape start end label
+/mnt/nvme/vovik/tutorial/torch_project/data/processed/npy/example.npy 112000 0 1600 0
+/mnt/nvme/vovik/tutorial/torch_project/data/processed/npy/example.npy 112000 1600 3200 0
+/mnt/nvme/vovik/tutorial/torch_project/data/processed/npy/example.npy 112000 3200 4800 1
+/mnt/nvme/vovik/tutorial/torch_project/data/processed/npy/example.npy 112000 4800 6400 1

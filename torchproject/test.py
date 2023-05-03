@@ -11,11 +11,11 @@ from typing import Union
 import argparse
 from torch.utils.tensorboard import SummaryWriter
 from .models import Model
-from .data import CudaDataLoader, BucketingSampler, MyDataset
+from .data import CudaDataLoader, BucketingSampler, AudioDataset
 from . import utils
-from .manager import BaseManager, MLFlowManager, ClearMLManager
+from .utils.manager import BaseManager, MLFlowManager, ClearMLManager
 from .models import model_init
-from .metrics import init_loss, BinClassificationMetrics
+from .metrics import init_loss, BinClassificationMetrics, Loss
 from .utils import EXPERIMENTS_DIR, TB_LOGS_DIR
 
 manager = None
@@ -109,7 +109,7 @@ def status_handler(func):
 def test_step(
         model:Model,
         batch:tuple,
-        loss,
+        loss_computer:Loss,
         metrics_computer:BinClassificationMetrics,
         ) -> dict:
     x, target = batch
@@ -119,20 +119,19 @@ def test_step(
     # probs - after activation   (for acc)
 
     # CrossEntropy loss
-    output = loss(logits, target.float())  # is graph (for backward)
-    loss_value = output.item()     # is float32
+    loss, loss_values = loss_computer(logits, target.float())
 
     # Check if loss is nan
-    if torch.isnan(output) or isnan(loss_value):
+    if torch.isnan(loss) or \
+        any([isnan(v) for v in loss_values.values()]):
         message = f"Loss is NaN"
         raise Exception(message)
 
     # Metrics computing
-    metrics = {"CrossEntropyLoss": loss_value}
-    metrics_ = metrics_computer.compute(probs, target,
+    metrics = metrics_computer.compute(probs, target,
                                        accumulate=True)
-    metrics_computer.add_summary(metrics)
-    metrics.update(metrics_)
+    metrics_computer.add_summary(loss_values)
+    metrics.update(loss_values)
     return metrics
 
 
@@ -170,6 +169,7 @@ def main(data:str,
     global manager
     if use_clearml and use_mlflow:
         raise ValueError("Choose either mlflow or clearml for management")
+    writer, logger = None, None
 
     # Validate device
     num_valid_gpus = torch.cuda.device_count()
@@ -189,43 +189,15 @@ def main(data:str,
         weights = osp.join(train_run_dir, 'weights', weights)
     else:
         weights = None  # weights must be defined in config
-    
+
     if isinstance(config, str):
         # load config from yaml
+        config_yaml = config
         config = utils.config_from_yaml(config)
     else:
+        config_yaml = '/tmp/config.yaml'
         config = dict(config)  # copy
-
-    # Load main params
-    test_params = config["test"]
-    data_params = config["data"]
     manager_params = config["manager"]
-    model_name = test_params["model"]
-    model_params = config["model"][model_name]
-    writer, logger = None, None
-
-    # Load test data
-    test_set = MyDataset(data, params=data_params)
-    data_size = len(test_set)
-    sampler = BucketingSampler(test_set, batch_size, shuffle=data_shuffle)
-    test_set = CudaDataLoader(gpu_id, test_set, 
-                              collate_fn=test_set.collate,
-                              pin_memory=True, num_workers=4,
-                              batch_sampler=sampler)
-    test_steps = len(test_set)  # number of batches
-
-    # Redefine weights
-    if weights:
-        model_params["weights"] = weights
-
-    # Define metadata
-    metadata = {
-            "data": data,
-            "batch_size": batch_size,
-            "data_size": data_size,
-            "test_steps": test_steps,
-    }
-    utils.pprint_dict(metadata)
 
     if not no_save:
         # Define test Run name
@@ -237,28 +209,13 @@ def main(data:str,
         run_dir = os.path.join(EXPERIMENTS_DIR, experiment,
                             'test', run_name)
         os.makedirs(run_dir)
-        metadata["storage"] = run_dir
-        # save config
-        config_yaml = osp.join(run_dir, 'config.yaml')
-        utils.dict2yaml(config, config_yaml)
-        # create metadata of this experiment
-        meta_yaml = osp.join(run_dir, 'meta.yaml')
-        utils.dict2yaml(metadata, meta_yaml)
-        # init files for log metrics
-        logfile = osp.join(run_dir, 'test.csv')
-        logger = utils.get_logger('test', logfile)
-        print(f"Experiment storage: '{run_dir}'")
 
         # Init manager
         if use_mlflow or use_clearml:
-            tags = {
-                'weights': osp.split(model_params["weights"])[1]
-            }
             params = {
                 "experiment": experiment,
                 "run_name": 'test-' + run_name,
                 "train": False,
-                "tags": tags
             }
             if use_clearml:
                 params.update(manager_params["clearml"])
@@ -267,19 +224,68 @@ def main(data:str,
                 params.update(manager_params["mlflow"])
                 manager = MLFlowManager(**params)
 
-            manager.set_iterations(test_steps)
             manager.log_hyperparams(manager_params["hparams"])
-            manager.log_config(config_yaml, 'config.yaml')
-            manager.log_config(meta_yaml, 'meta.yaml')
+            # log and update config if it's defined in experiment
+            config_yaml = manager.log_config(config_yaml)
+            config = utils.config_from_yaml(config_yaml)
+            hparams = config["manager"]["hparams"]
+            # log and update if it was changed
+            hparams = manager.log_hyperparams(hparams)  
             print(f"Manager experiment run name: {'test-' + run_name}")
 
-        # Tensorboard writer
-        if tensorboard:
-            log_dir = osp.join(TB_LOGS_DIR, experiment, 'test', run_name)
-            if not osp.exists(log_dir):
-                os.makedirs(log_dir)
-            writer = SummaryWriter(log_dir=log_dir)
-            print(f"Tensorboard logs: '{log_dir}'")
+        # save config
+        config_yaml = osp.join(run_dir, 'config.yaml')
+        utils.dict2yaml(config, config_yaml)
+        # init files for log metrics
+        logfile = osp.join(run_dir, 'test.csv')
+        logger = utils.get_logger('test', logfile)
+        print(f"Experiment storage: '{run_dir}'")
+
+    # Load main params
+    utils.update_given_keys(config, hparams)
+    test_params = config["test"]
+    model_name = config["model"]
+    model_params = config["models"][model_name]
+    preprocess_params = config["preprocess"]
+    n_classes = config["n_classes"]
+
+    # Load test data
+    test_set = AudioDataset(data, n_classes=n_classes,
+                            preprocess_params=preprocess_params)
+    data_size = len(test_set)
+    sampler = BucketingSampler(test_set, batch_size, shuffle=data_shuffle)
+    test_set = CudaDataLoader(gpu_id, test_set, 
+                              collate_fn=test_set.collate,
+                              pin_memory=True, num_workers=4,
+                              batch_sampler=sampler)
+    test_steps = len(test_set)  # number of test batches
+
+    # Redefine weights
+    if weights:
+        model_params["weights"] = weights
+
+    # Add specific info
+    if manager:
+        manager.set_iterations(test_steps)
+        weights_name = osp.split(model_params["weights"])[1]
+        manager.add_tags({'weights': weights_name}, rewrite=True)
+
+    # Define metadata
+    metadata = {
+            "data": data,
+            "batch_size": batch_size,
+            "data_size": data_size,
+            "test_steps": test_steps,
+            "storage": run_dir,
+            "weights": model_params["weights"],
+            
+    }
+    utils.pprint_dict(metadata)
+    if not no_save:
+        meta_yaml = osp.join(run_dir, 'meta.yaml')
+        utils.dict2yaml(metadata, meta_yaml)
+        if manager:
+            manager.log_metadata(metadata)
 
     # Define model
     if not model_params["weights"]:
@@ -288,6 +294,14 @@ def main(data:str,
                        model_params,
                        train=True,
                        device=device)
+    
+    # Tensorboard writer
+    if not no_save and tensorboard:
+        log_dir = osp.join(TB_LOGS_DIR, experiment, 'test', run_name)
+        if not osp.exists(log_dir):
+            os.makedirs(log_dir)
+        writer = SummaryWriter(log_dir=log_dir)
+        print(f"Tensorboard logs: '{log_dir}'")
 
     # Define loss
     loss_name = test_params["loss"]
@@ -308,6 +322,7 @@ def main(data:str,
             loss,
             metrics_computer
         )
+        metrics = {k: metrics[k] for k in test_params["metrics"]}
         if (step + 1) % log_step == 0:
             log_metrics(metrics, step=step+1, 
                         metrics_computer=metrics_computer,
@@ -315,6 +330,7 @@ def main(data:str,
                         tb_writer=writer)
 
     avg_metrics = metrics_computer.summary()
+    avg_metrics = {k: avg_metrics[k] for k in test_params["metrics"]}
     print("\n--- Average metrics ---")
     for k, v in avg_metrics.items():
         print(f"{k}: {v}")
@@ -331,7 +347,7 @@ if __name__ == '__main__':
     parser.add_argument('--config', '-cfg', type=str, default='config.yaml', 
                         help='path/to/config.yaml')
     parser.add_argument('--data', '-d', type=str, 
-                        default='data/test_manifest.csv',
+                        default='data/processed/test_manifest.v1.csv',
                         help='path/to/data')
     parser.add_argument('--batch_size', '-bs', type=int, default=20)
     parser.add_argument('--gpu', type=int, dest="gpu_id", default=0,

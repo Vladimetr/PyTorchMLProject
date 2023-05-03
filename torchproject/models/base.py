@@ -1,11 +1,19 @@
 import pandas as pd
 import torch
 from typing import Tuple
+from ..preprocess import BaseFeatures, init_features_extractor
 
 class Model(torch.nn.Module):
-    def __init__(self):
-        self.accumulated_grads = []
+    def __init__(self, features:dict=None):
         super().__init__()
+        self.accumulated_grads = []
+        if features:
+            features_name = list(features.keys())[0]
+            features_params = features[features_name]
+            self.features = init_features_extractor(features_name,
+                                                    features_params)
+        else:
+            self.features = None
 
     def init_params(self, *args, **kwargs):
         """
@@ -13,20 +21,32 @@ class Model(torch.nn.Module):
         """
         raise NotImplementedError()
     
-    def forward(x:torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def to(self, *args, **kwargs):
+        if self.features:
+            self.features = self.features.to(*args, **kwargs)
+        return super().to(*args, **kwargs)
+    
+    def forward(self, x:torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         B - batch size
         T - time dim
+        S - sample size
         F - feature dim
         C - n classes
         Args:
-            x (B, T, F): input
+            features (B, F, T): input features
+            or
+            sample (B, 1, S): raw sample
         Returns:
             tuple
               (B, C): output logits
               (B, C): output probs (output of softmax)
         """
-        raise NotImplementedError("Abstract")
+        if self.features:
+            # (B, 1, S)
+            x = self.features(x)
+            # (B, F, T)
+        return x
 
     def get_num_params(self):
         total_n = 0

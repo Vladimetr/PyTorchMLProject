@@ -15,16 +15,16 @@
 import os
 import os.path as osp
 from typing import Union
-from math import isnan as math_isnan
+from math import isnan
 import argparse
 import torch
 from torch.utils.tensorboard import SummaryWriter
 from torch.nn.utils import clip_grad_norm_
-from .data import CudaDataLoader, BucketingSampler, MyDataset
+from .data import CudaDataLoader, BucketingSampler, AudioDataset
 from . import utils
-from .metrics import init_loss, BinClassificationMetrics
+from .metrics import init_loss, BinClassificationMetrics, Loss
 from .models import Model, model_init
-from .manager import MLFlowManager, ClearMLManager
+from .utils.manager import MLFlowManager, ClearMLManager
 from .test import test_step
 from .utils import EXPERIMENTS_DIR, TB_LOGS_DIR
 
@@ -39,6 +39,13 @@ def get_new_run_id(runs_dir:str) -> int:
                       for run_name in existed_runs])
     return max_id + 1
 
+def get_metrics_score(metrics:dict) -> float:
+    """ Score of metrics for best criteria 
+    For example: score = 2 * Recall + Precision
+    NOTE: the higher score is better
+    """
+    score = 2 * metrics["Recall"] + metrics["Precision"]
+    return score
 
 def get_better_metrics(metrics1:dict, metrics2:dict) -> dict:
     """
@@ -46,11 +53,9 @@ def get_better_metrics(metrics1:dict, metrics2:dict) -> dict:
     Returns:
         dict: one of two metrics dict which is better
     """
-    # For example
-    if metrics1["TP"] > metrics2["TP"]:
+    if get_metrics_score(metrics1) > get_metrics_score(metrics2):
         return metrics1
     return metrics2
-
 
 def status_handler(func):
     def run_train(*args, **kwargs):
@@ -98,7 +103,7 @@ def train_step(
         model:Model,
         batch:tuple,
         optimizer,
-        loss,
+        loss_computer:Loss,
         metrics_computer:BinClassificationMetrics,
         train_params:dict,
         ) -> dict:
@@ -112,19 +117,18 @@ def train_step(
     # logits - before activation (for loss)
     # probs - after activation   (for acc)
 
-    # CrossEntropy loss
-    output = loss(logits, target.float())  # is graph (for backward)
-    loss_value = output.item()     # is float32
+    loss, loss_values = loss_computer(logits, target.float())
 
     # Check if loss is nan
-    if torch.isnan(output) or math_isnan(loss_value):
+    if torch.isnan(loss) or \
+            any([isnan(v) for v in loss_values.values()]):
         message = f"Loss is NaN"
         raise Exception(message)
 
     # обратное распр-е ошибки.
     # для каждого параметра модели w считает w.grad
     # здесь НЕ обновляются веса!
-    output.backward()
+    loss.backward()
 
     clip_grad_norm_(model.parameters(), train_params['grad_norm'])
     # prevent exploding gradient
@@ -137,10 +141,9 @@ def train_step(
     model.validate_grads()
 
     # metrics computing
-    metrics = {"CrossEntropyLoss": loss_value}
-    metrics_ = metrics_computer.compute(probs, target,
+    metrics = metrics_computer.compute(probs, target,
                                        accumulate=False)
-    metrics.update(metrics_)
+    metrics.update(loss_values)
     return metrics
 
 
@@ -176,6 +179,7 @@ def main(train_data:str,
     global manager
     if use_clearml and use_mlflow:
         raise ValueError("Choose either mlflow or clearml for management")
+    train_logger, test_logger = None, None
 
     # Validate device
     num_valid_gpus = torch.cuda.device_count()
@@ -188,43 +192,10 @@ def main(train_data:str,
         # load config from yaml
         config_yaml = config
         config = utils.config_from_yaml(config_yaml)
-    train_params = config["train"]
-    test_params = config["test"]
-    data_params = config["data"]
+    else:
+        config_yaml = '/tmp/config.yaml'
+        utils.dict2yaml(config, config_yaml)
     manager_params = config["manager"]
-    train_logger, test_logger = None, None
-
-    # Load train data
-    train_set = MyDataset(train_data, params=data_params)
-    train_data_size = len(train_set)
-    sampler = BucketingSampler(train_set, batch_size, shuffle=data_shuffle)
-    train_set = CudaDataLoader(gpu_id, train_set, 
-                               collate_fn=train_set.collate, 
-                               pin_memory=True, num_workers=4,
-                               batch_sampler=sampler)
-    train_steps = len(train_set)  # number of train batches
-
-    # Load test data
-    test_set = MyDataset(test_data, params=data_params)
-    test_data_size = len(test_set)
-    sampler = BucketingSampler(test_set, batch_size, shuffle=data_shuffle)
-    test_set = CudaDataLoader(gpu_id, test_set, 
-                              collate_fn=test_set.collate,
-                              pin_memory=True, num_workers=4,
-                              batch_sampler=sampler)
-    test_steps = len(test_set)  # number of test batches
-    
-    # Define metadata
-    metadata = {
-            "train_data": train_data,
-            "test_data": test_data,
-            "batch_size": batch_size,
-            "train_data_size": train_data_size,
-            "train_steps": train_steps,
-            "test_data_size": test_data_size,
-            "test_steps": test_steps,
-    }
-    utils.pprint_dict(metadata)
 
     # Create experiment
     if not no_save:
@@ -236,25 +207,12 @@ def main(train_data:str,
         run_name = '{:03d}'.format(get_new_run_id(runs_dir))
         if comment:
             run_name += '_' + comment
+
         # init dirs
         run_dir = osp.join(runs_dir, run_name)
         os.makedirs(run_dir)
         os.makedirs(osp.join(run_dir, 'weights/'))
-        metadata["storage"] = run_dir
-        # save config to run_dir
-        config_yaml = osp.join(run_dir, 'config.yaml')
-        utils.dict2yaml(config, config_yaml)
-        meta_yaml = osp.join(run_dir, 'meta.yaml')
-        utils.dict2yaml(metadata, meta_yaml)
-        # init files for log metrics (in csv format)
-        train_logfile = osp.join(run_dir, 'train.csv')
-        train_logger = utils.get_logger('train', train_logfile)
-        test_logfile = osp.join(run_dir, 'test.csv')
-        test_logger = utils.get_logger('test', test_logfile)
-        # set path to best weights.pt
-        best_weights_path = osp.join(run_dir, f"weights/best.pt")
-        print(f"Experiment storage: '{run_dir}'")
-
+        
         # Init manager
         if use_mlflow or use_clearml:
             params = {
@@ -270,14 +228,77 @@ def main(train_data:str,
                 manager = MLFlowManager(**params)
 
             manager.set_iterations(epochs)
-            manager.log_hyperparams(manager_params["hparams"])
-            manager.log_config(config_yaml, 'config.yaml')
-            manager.log_config(meta_yaml, 'meta.yaml')
+            # log and update config if it's defined in experiment
+            config_yaml = manager.log_config(config_yaml)
+            config = utils.config_from_yaml(config_yaml)
+            hparams = config["manager"]["hparams"]
+            # log and update if it was changed
+            hparams = manager.log_hyperparams(hparams)  
             print(f"Manager experiment run name: {'train-' + run_name}")
+        
+        # save config to run_dir
+        config_yaml = osp.join(run_dir, 'config.yaml')
+        utils.dict2yaml(config, config_yaml)
+        # init files for log metrics (in csv format)
+        train_logfile = osp.join(run_dir, 'train.csv')
+        train_logger = utils.get_logger('train', train_logfile)
+        test_logfile = osp.join(run_dir, 'test.csv')
+        test_logger = utils.get_logger('test', test_logfile)
+        # set path to best weights.pt
+        best_weights_path = osp.join(run_dir, f"weights/best.pt")
+        print(f"Experiment storage: '{run_dir}'")
+
+    # Update config with hparams
+    utils.update_given_keys(config, hparams)
+    train_params = config["train"]
+    test_params = config["test"]
+    preprocess_params = config["preprocess"]
+    n_classes = config["n_classes"]
+
+    # Load train data
+    train_set = AudioDataset(train_data, n_classes=n_classes, 
+                             preprocess_params=preprocess_params)
+    train_data_size = len(train_set)
+    sampler = BucketingSampler(train_set, batch_size, shuffle=data_shuffle)
+    train_set = CudaDataLoader(gpu_id, train_set, 
+                               collate_fn=train_set.collate, 
+                               pin_memory=True, num_workers=4,
+                               batch_sampler=sampler)
+    train_steps = len(train_set)  # number of train batches
+
+    # Load test data
+    test_set = AudioDataset(test_data, n_classes=n_classes,
+                            preprocess_params=preprocess_params)
+    test_data_size = len(test_set)
+    sampler = BucketingSampler(test_set, batch_size, shuffle=data_shuffle)
+    test_set = CudaDataLoader(gpu_id, test_set, 
+                              collate_fn=test_set.collate,
+                              pin_memory=True, num_workers=4,
+                              batch_sampler=sampler)
+    test_steps = len(test_set)  # number of test batches
+    
+    # Define metadata
+    metadata = {
+            "storage": run_dir,
+            "train_data": train_data,
+            "test_data": test_data,
+            "batch_size": batch_size,
+            "train_data_size": train_data_size,
+            "train_steps": train_steps,
+            "test_data_size": test_data_size,
+            "test_steps": test_steps,
+            "log_step": log_step
+    }
+    utils.pprint_dict(metadata)
+    if not no_save:
+        meta_yaml = osp.join(run_dir, 'meta.yaml')
+        utils.dict2yaml(metadata, meta_yaml)
+        if manager:
+            manager.log_metadata(metadata)
 
     # Define model
-    model_name = train_params["model"]
-    model_params = config["model"][model_name]
+    model_name = config["model"]
+    model_params = config["models"][model_name]
     model_params["weights"] = train_params["pretrained"] 
     # None of path/to/model.pt
     model = model_init(model_name,
@@ -321,12 +342,7 @@ def main(train_data:str,
                                 compute_metrics=compute_metrics,
                                 logger=test_logger)
 
-    best_metrics = {
-        'TP': 0,
-        'FN': 1,
-        'FN': 1,
-        'TN': 0,
-    }
+    best_metrics = None
     train_iter = test_iter = 0
     for ep in range(1, epochs + 1):
         print(f"\n{ep}/{epochs} Epoch...")
@@ -340,10 +356,12 @@ def main(train_data:str,
                 model=model,
                 batch=batch,
                 optimizer=optimizer,
-                loss=loss,
+                loss_computer=loss,
                 metrics_computer=train_metrics_computer,
                 train_params=train_params,
             )
+            # filter out not required metrics
+            metrics = {k: metrics[k] for k in train_params["metrics"]}
             if (i+1) % log_step == 0:
                 log_metrics(metrics, epoch=ep, step=i+1, 
                             global_step=train_iter,
@@ -363,9 +381,11 @@ def main(train_data:str,
             metrics = test_step(
                 model=model,
                 batch=batch,
-                loss=loss,
+                loss_computer=loss,
                 metrics_computer=test_metrics_computer
             )
+            # filter out not required metrics
+            metrics = {k: metrics[k] for k in test_params["metrics"]}
             log_metrics(metrics, epoch=ep, step=i+1, 
                         global_step=test_iter,
                         metrics_computer=test_metrics_computer,
@@ -374,6 +394,7 @@ def main(train_data:str,
             
         print("Average metrics:")
         metrics = test_metrics_computer.summary()
+        metrics = {k: metrics[k] for k in test_params["metrics"]}
         for k, v in metrics.items():
             print(f"{k}: {v}")
 
@@ -397,14 +418,12 @@ def main(train_data:str,
     print("Best metrics:")
     for k, v in best_metrics.items():
         print(f"{k}: {v}")
-    config["model"][model_name]["weights"] = best_weights_path
-    utils.dict2yaml(config, config_yaml)
-    if manager:
-        manager.log_summary_metrics(best_metrics)
-        manager.log_config(config_yaml)
-
     if not no_save:
+        model_params["weights"] = best_weights_path
+        utils.dict2yaml(config, config_yaml)
         if manager:
+            manager.log_summary_metrics(best_metrics)
+            manager.log_config(config_yaml)
             manager.set_status("FINISHED")
             manager.close()
         if tensorboard:
@@ -419,9 +438,9 @@ if __name__ == '__main__':
                         default='config.yaml', 
                         help='path/to/config.yaml')
     parser.add_argument('--train-data', type=str, 
-                        default='data/train_manifest.csv')
+                        default='data/processed/train_manifest.v1.csv')
     parser.add_argument('--test-data', type=str, 
-                        default='data/test_manifest.csv')
+                        default='data/processed/test_manifest.v1.csv')
     parser.add_argument('--batch-size', '-bs', type=int, 
                         default=100)
     parser.add_argument('--gpu', type=int, dest="gpu_id", default=0,

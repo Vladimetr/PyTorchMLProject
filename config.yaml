@@ -1,24 +1,61 @@
 n_classes: &n_classes 2
+frame: &frame 0.2  # classificated frame len (sec)
+sample_rate: &sr 8000
 
-model:
-  cnn:
+# -------------------- Architectures --------------------
+# valid models
+models:
+  tcn:
+    timesteps: 26             # T
+    in_channels: 40           # F
+    channels: [64, 32, 16]    # 4 TempBlocks
+    hidden_dim: 100
     n_classes: *n_classes
-    n_layers: &cnn_layers 3
-    fdim: 256
-    weights: 'dev/experiments/experiment2/train/002/weights/2.pt'
+    kernel_size: 5
+    dropout: 0.1
+    weights: '/mnt/nvme/vovik/tutorial/torch_project/dev/experiments/test-experiment/train/075/weights/1.pt'
+    features:  # {'name': {params}} or null
+      logmel:
+        sr: *sr
+        wnd_step: 0.008
+        wnd_len: 0.010
+        nfilt: 40   # F
+        nfft: 512
+
+# what model to use
+model: &model tcn
 
 loss: 
   cross_entropy:
-    pos_weight: [0.8, 0.2]
+    weights: [0.8, 0.2]
+
+preprocess:
+  sr: *sr
+  codec: pcm_s16le
+  min_dur: 0.2  # sec
+  max_dur: 300  # sec
+  format: wav
+  frame: *frame   # split on frames
+  features: null  # {'name': {params}} or null
+    # logmel:
+    #   sr: *sr
+    #   wnd_step: 0.008
+    #   wnd_len: 0.010
+    #   nfilt: 40   # F
+    #   nfft: 512
+
+train:
+  loss: cross_entropy
+  metrics: ["CrossEntropyLoss", "Precision", "Recall"]
+  opt: &opt Adam
+  learning_rate: &lr 0.0001
+  weight_decay: 0.00001  # reg loss
+  grad_norm: 2.0
+  pretrained: ''
 
 test:
-  model: cnn
-  metrics: ["CrossEntropyLoss", "TP", "FN", "FP", "TN"]
+  metrics: ["CrossEntropyLoss", "Precision", "Recall", "Acc"]
   loss: cross_entropy
-
-preprocess: &preprocess
-  sample_rate: 16000
-  fdim: 256
 
 manager:
   mlflow:
@@ -28,18 +65,7 @@ manager:
     secret_token: QJPm5a8Ef4L7Ag5QRuemh93RFEXHSdXaxnkwhM0dRwa0mtf9qE
     subproject: True  # experiment format
   hparams:
-    cnn_layers: *cnn_layers
-
-data:
-  preprocess: *preprocess
-  n_classes: *n_classes
-
-train:
-  model: cnn
-  loss: cross_entropy
-  metrics: ["CrossEntropyLoss", "TP", "FN"]
-  opt: Adam
-  learning_rate: 0.0001
-  weight_decay: 0.00001  # reg loss
-  grad_norm: 1.0
-  pretrained: ''
+    model: *model
+    train:
+      opt: *opt
+      learning_rate: *lr
