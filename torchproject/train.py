@@ -117,7 +117,7 @@ def train_step(
     # logits - before activation (for loss)
     # probs - after activation   (for acc)
 
-    loss, loss_values = loss_computer(logits, target.float())
+    loss, loss_values = loss_computer(logits, target)
 
     # Check if loss is nan
     if torch.isnan(loss) or \
@@ -179,7 +179,8 @@ def main(train_data:str,
     global manager
     if use_clearml and use_mlflow:
         raise ValueError("Choose either mlflow or clearml for management")
-    train_logger, test_logger = None, None
+    train_logger, test_logger, run_dir = None, None, None
+    hparams = dict()
 
     # Validate device
     num_valid_gpus = torch.cuda.device_count()
@@ -332,6 +333,8 @@ def main(train_data:str,
     compute_metrics = train_params["metrics"]
     train_metrics_computer = BinClassificationMetrics(
                                step=True, epoch=True,
+                               n_classes=n_classes,
+                               pos_classes=config["pos_classes"],
                                compute_metrics=compute_metrics,
                                logger=train_logger)
 
@@ -339,6 +342,8 @@ def main(train_data:str,
     compute_metrics = test_params["metrics"]
     test_metrics_computer = BinClassificationMetrics(
                                 step=True, epoch=True,
+                                n_classes=n_classes,
+                                pos_classes=config["pos_classes"],
                                 compute_metrics=compute_metrics,
                                 logger=test_logger)
 
@@ -392,11 +397,15 @@ def main(train_data:str,
                         tb_writer=writer_test)
             test_iter += 1
             
-        print("Average metrics:")
+        # Summary
+        print("\n--- Summary metrics ---")
         metrics = test_metrics_computer.summary()
-        metrics = {k: metrics[k] for k in test_params["metrics"]}
-        for k, v in metrics.items():
-            print(f"{k}: {v}")
+        for k in test_params["metrics"]:
+            print(f"{k}: {metrics[k]}")
+        # Print summary conf matrix
+        if n_classes > 2:
+            test_metrics_computer.print_conf_matrix(metrics["conf_matrix"])
+        test_metrics_computer.print_conf_matrix(metrics["bin_conf_matrix"])
 
         if manager:
             manager.log_step_metrics(metrics, step=ep)
@@ -415,14 +424,22 @@ def main(train_data:str,
 
         # ---- END OF EPOCH
 
-    print("Best metrics:")
-    for k, v in best_metrics.items():
-        print(f"{k}: {v}")
+    # BEST
+    print("\n--- Best metrics ---")
+    for k in test_params["metrics"]:
+        print(f"{k}: {best_metrics[k]}")
+    # Print summary conf matrix
+    if n_classes > 2:
+        test_metrics_computer.print_conf_matrix(best_metrics["conf_matrix"])
+    test_metrics_computer.print_conf_matrix(best_metrics["bin_conf_matrix"])
+    
     if not no_save:
+        # Save best
         model_params["weights"] = best_weights_path
         utils.dict2yaml(config, config_yaml)
         if manager:
             manager.log_summary_metrics(best_metrics)
+            # TODO: log summary conf matrix
             manager.log_config(config_yaml)
             manager.set_status("FINISHED")
             manager.close()

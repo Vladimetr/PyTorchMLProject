@@ -161,8 +161,7 @@ class AudioDataset(Dataset):
             ys.append(y)
 
         xs = torch.cat(xs, dim=0)
-        ys = torch.tensor(ys)
-        ys = F.one_hot(ys, num_classes=self.n_classes)
+        ys = torch.tensor(ys, dtype=torch.long)
         return xs, ys
 
 

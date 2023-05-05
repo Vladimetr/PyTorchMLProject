@@ -119,7 +119,7 @@ def test_step(
     # probs - after activation   (for acc)
 
     # CrossEntropy loss
-    loss, loss_values = loss_computer(logits, target.float())
+    loss, loss_values = loss_computer(logits, target)
 
     # Check if loss is nan
     if torch.isnan(loss) or \
@@ -169,7 +169,8 @@ def main(data:str,
     global manager
     if use_clearml and use_mlflow:
         raise ValueError("Choose either mlflow or clearml for management")
-    writer, logger = None, None
+    writer, logger, run_dir = None, None, None
+    hparams = dict()
 
     # Validate device
     num_valid_gpus = torch.cuda.device_count()
@@ -310,9 +311,13 @@ def main(data:str,
 
     # Init test metrics computer
     compute_metrics = test_params["metrics"]
-    metrics_computer = BinClassificationMetrics(step=True,
-                        compute_metrics=compute_metrics,
-                        logger=logger)
+    metrics_computer = BinClassificationMetrics(
+        step=True,
+        n_classes=n_classes,
+        pos_classes=config["pos_classes"],
+        compute_metrics=compute_metrics,
+        logger=logger
+    )
 
     test_set.shuffle(15)
     for step, batch in enumerate(test_set):
@@ -329,13 +334,18 @@ def main(data:str,
                         manager=manager,
                         tb_writer=writer)
 
-    avg_metrics = metrics_computer.summary()
-    avg_metrics = {k: avg_metrics[k] for k in test_params["metrics"]}
-    print("\n--- Average metrics ---")
-    for k, v in avg_metrics.items():
-        print(f"{k}: {v}")
+    sum_metrics = metrics_computer.summary()
+    print("\n--- Summary metrics ---")
+    for k in test_params["metrics"]:
+        print(f"{k}: {sum_metrics[k]}")
+    # Print summary conf matrix
+    if n_classes > 2:
+        metrics_computer.print_conf_matrix(sum_metrics["conf_matrix"])
+    metrics_computer.print_conf_matrix(sum_metrics["bin_conf_matrix"])
+    
     if manager:
-       manager.log_summary_metrics(avg_metrics)
+       manager.log_summary_metrics(sum_metrics)
+       # TODO: log conf matrix
        manager.close()
 
     if writer: writer.close()
