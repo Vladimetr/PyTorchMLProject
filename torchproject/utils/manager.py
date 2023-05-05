@@ -96,14 +96,18 @@ class BaseManager:
         pass
 
     def log_confusion_matrix(self, conf_matrix: matrix, 
-                             classes:List[str], step:int=None):
+                             classes:List[str]=None, step:int=None):
         """
         Some managers support logging confusion matrix
         NOTE: xaxis="target" and yaxis="predict"
         """
         # validate confusion matrix
-        shape = matrix.shape
-        n_classes = len(classes)
+        shape = conf_matrix.shape
+        if classes:
+            n_classes = len(classes)
+        else:
+            n_classes = shape[0]
+            classes = [str(i) for i in range(n_classes)]
         if not (len(shape) == 2 and shape[0] == shape[1] == n_classes):
             raise ValueError('Mismatch matrix shape and N classes')
 
@@ -184,17 +188,19 @@ class ClearMLManager(BaseManager):
         self.task.close()
 
     def log_confusion_matrix(self, conf_matrix: matrix, 
-                             classes:List[str], step:int=None):
+                             classes:List[str]=None, 
+                             title:str='Confusion matrix',
+                             step:int=None):
         # validate input
         super().log_confusion_matrix(conf_matrix, classes)
         step = step or self.max_step
         if isinstance(conf_matrix, torch.Tensor):
             conf_matrix = conf_matrix.numpy()
         self.logger.report_confusion_matrix(
-            "Confusion matrix", "ignored", 
-            iteration=step, matrix=conf_matrix,
-            xlabels=classes, ylabels=classes,
-            xaxis="target", yaxis="predict"
+                    title, "ignored", 
+                    iteration=step, matrix=conf_matrix,
+                    xlabels=classes, ylabels=classes,
+                    xaxis="target", yaxis="predict"
         )
 
 

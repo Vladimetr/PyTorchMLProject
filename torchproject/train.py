@@ -17,6 +17,7 @@ import os.path as osp
 from typing import Union
 from math import isnan
 import argparse
+from tqdm import tqdm
 import torch
 from torch.utils.tensorboard import SummaryWriter
 from torch.nn.utils import clip_grad_norm_
@@ -347,16 +348,23 @@ def main(train_data:str,
                                 compute_metrics=compute_metrics,
                                 logger=test_logger)
 
-    best_metrics = None
+    best_metrics, best_epoch = None, None
     train_iter = test_iter = 0
     for ep in range(1, epochs + 1):
         print(f"\n{ep}/{epochs} Epoch...")
-        if manager:
-            manager.log_iteration(ep)
-
         model.train()
         train_set.shuffle(ep)
-        for i, batch in enumerate(train_set):
+        if manager:
+            manager.log_iteration(ep)
+        # Progress bar
+        if not no_save:
+            train_batches = utils.get_progress_bar(train_set, 
+                                                   total=train_steps, 
+                                                   title=f"Epoch {ep}")
+        else:
+            train_batches = train_set
+
+        for i, batch in enumerate(train_batches):
             metrics = train_step(
                 model=model,
                 batch=batch,
@@ -381,8 +389,16 @@ def main(train_data:str,
             print(f"Weights save: '{weights_path}'")
 
         print('------------- Test ---------------')
+        model.eval()
+        # Progress bar
+        if not no_save:
+            test_batches = utils.get_progress_bar(test_set, 
+                                                  total=test_steps, 
+                                                  title=f"Epoch {ep}")
+        else:
+            test_batches = enumerate(test_set)
 
-        for i, batch in enumerate(test_set):
+        for i, batch in test_batches:
             metrics = test_step(
                 model=model,
                 batch=batch,
@@ -407,40 +423,54 @@ def main(train_data:str,
             test_metrics_computer.print_conf_matrix(metrics["conf_matrix"])
         test_metrics_computer.print_conf_matrix(metrics["bin_conf_matrix"])
 
-        if manager:
-            manager.log_step_metrics(metrics, step=ep)
-
         # Сheck whether it's the best metrics
         if best_metrics is None or \
                 get_better_metrics(metrics, best_metrics) is metrics:
-            best_metrics = metrics
+            best_metrics = dict(metrics)
+            best_epoch = ep
             print('New best results')
             # save best weights
             if not no_save:
                 model.save(best_weights_path)
                 print(f"Weights save: '{best_weights_path}'")
 
+        if manager:
+            metrics = {k: best_metrics[k] for k in test_params["metrics"]}
+            manager.log_step_metrics(metrics, step=ep)
+
         test_metrics_computer.reset_summary()
 
         # ---- END OF EPOCH
 
-    # BEST
+    # BEST result in this experiment
     print("\n--- Best metrics ---")
+    print(f"Best epoch: {best_epoch}")
     for k in test_params["metrics"]:
         print(f"{k}: {best_metrics[k]}")
-    # Print summary conf matrix
+    # Print best conf matrix
     if n_classes > 2:
-        test_metrics_computer.print_conf_matrix(best_metrics["conf_matrix"])
-    test_metrics_computer.print_conf_matrix(best_metrics["bin_conf_matrix"])
+        conf_matrix = best_metrics["conf_matrix"]
+        test_metrics_computer.print_conf_matrix(conf_matrix)
+    bin_conf_matrix = best_metrics["bin_conf_matrix"]
+    test_metrics_computer.print_conf_matrix(bin_conf_matrix)
     
     if not no_save:
         # Save best
         model_params["weights"] = best_weights_path
         utils.dict2yaml(config, config_yaml)
         if manager:
+            best_metrics = {k: best_metrics[k] \
+                            for k in test_params["metrics"]}
             manager.log_summary_metrics(best_metrics)
-            # TODO: log summary conf matrix
+            manager.log_confusion_matrix(bin_conf_matrix,
+                                         title="Bin confusion matrix",
+                                         step=best_epoch)
+            if n_classes > 2:
+                manager.log_confusion_matrix(conf_matrix, 
+                                             classes=config["classes"],
+                                             step=best_epoch)
             manager.log_config(config_yaml)
+            manager.add_tags({'best': f"{best_epoch}.pt"})
             manager.set_status("FINISHED")
             manager.close()
         if tensorboard:

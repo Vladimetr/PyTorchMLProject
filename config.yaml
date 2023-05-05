@@ -1,4 +1,9 @@
-n_classes: &n_classes 2
+n_classes: &n_classes 3
+classes:
+  - noise
+  - music
+  - speech
+pos_classes: [1]  # class(es) that are assigned as positive in bin conf matrix
 frame: &frame 0.2  # classificated frame len (sec)
 sample_rate: &sr 8000
 
@@ -27,7 +32,7 @@ model: &model tcn
 
 loss: 
   cross_entropy:
-    weights: [0.8, 0.2]
+    weights: [0.8, 0.1, 0.1]  # must be equal to n_classes
 
 preprocess:
   sr: *sr

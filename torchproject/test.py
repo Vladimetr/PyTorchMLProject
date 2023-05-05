@@ -341,11 +341,13 @@ def main(data:str,
     # Print summary conf matrix
     if n_classes > 2:
         metrics_computer.print_conf_matrix(sum_metrics["conf_matrix"])
-    metrics_computer.print_conf_matrix(sum_metrics["bin_conf_matrix"])
+    bin_conf_matrix = sum_metrics["bin_conf_matrix"]
+    metrics_computer.print_conf_matrix(bin_conf_matrix)
     
     if manager:
+       sum_metrics = {k: sum_metrics[k] for k in test_params["metrics"]}
        manager.log_summary_metrics(sum_metrics)
-       # TODO: log conf matrix
+       manager.log_confusion_matrix(bin_conf_matrix)
        manager.close()
 
     if writer: writer.close()

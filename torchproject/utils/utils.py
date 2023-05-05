@@ -66,6 +66,14 @@ def get_logger(name='main', logfile:str=None):
     return logger
 
 
+def get_progress_bar(iter, title:str='', total:int=None):
+    bar_fmt = '| {n_fmt}/{total_fmt} {postfix}'
+    total = total or len(iter)
+    iter = tqdm(iter, desc=title, total=total,
+                bar_format='{l_bar}{bar:29}' + bar_fmt)
+    return iter
+
+
 def read_metrics_from_csv(csv_path:str) -> pd.DataFrame:
     df = pd.read_csv(csv_path, sep=' ')
     columns = df.columns.tolist()
