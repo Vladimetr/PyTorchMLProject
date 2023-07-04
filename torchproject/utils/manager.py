@@ -95,7 +95,8 @@ class BaseManager:
         """
         pass
 
-    def log_confusion_matrix(self, conf_matrix: matrix, 
+    def log_confusion_matrix(self, conf_matrix: matrix,
+                             title="Confusion matrix", 
                              classes:List[str]=None, step:int=None):
         """
         Some managers support logging confusion matrix
@@ -241,8 +242,30 @@ class MLFlowManager(BaseManager):
         mlflow.log_metrics(metrics, step=step)
         self.max_step = max(self.max_step, step)
 
+    def _preprocess_hparams(self, hparams:dict) -> dict:
+        """
+        hparams might have hierarchy that is not convenient
+        for display, so only key:value to return
+        For example:
+        models:
+          cnn:
+            kernel: 3
+        train:
+          opt: Adam
+        -> kernel: 3
+           opt: Adam
+        """
+        processed_hparams = {}
+        for k, v in hparams.items():
+            if isinstance(v, dict):
+                processed_hparams.update(self._preprocess_hparams(v))
+            else:
+                processed_hparams[k] = v
+        return processed_hparams
+
     def log_hyperparams(self, hparams:dict) -> dict:
-        mlflow.log_params(hparams)
+        processed_hparams = self._preprocess_hparams(hparams)
+        mlflow.log_params(processed_hparams)
         return hparams
 
     def log_summary_metrics(self, metrics:dict):

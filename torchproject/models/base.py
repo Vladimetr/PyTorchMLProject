@@ -1,10 +1,10 @@
 import pandas as pd
 import torch
 from typing import Tuple
-from ..preprocess import BaseFeatures, init_features_extractor
+from ..preprocess import init_features_extractor
 
 class Model(torch.nn.Module):
-    def __init__(self, features:dict=None):
+    def __init__(self, features:dict=None, *args, **kwargs):
         super().__init__()
         self.accumulated_grads = []
         if features:

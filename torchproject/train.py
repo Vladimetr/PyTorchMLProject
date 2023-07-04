@@ -45,7 +45,7 @@ def get_metrics_score(metrics:dict) -> float:
     For example: score = 2 * Recall + Precision
     NOTE: the higher score is better
     """
-    score = 2 * metrics["Recall"] + metrics["Precision"]
+    score = 2 * metrics["FN"] + metrics["FP"]
     return score
 
 def get_better_metrics(metrics1:dict, metrics2:dict) -> dict:
@@ -396,9 +396,9 @@ def main(train_data:str,
                                                   total=test_steps, 
                                                   title=f"Epoch {ep}")
         else:
-            test_batches = enumerate(test_set)
+            test_batches = test_set
 
-        for i, batch in test_batches:
+        for i, batch in enumerate(test_batches):
             metrics = test_step(
                 model=model,
                 batch=batch,
@@ -414,7 +414,7 @@ def main(train_data:str,
             test_iter += 1
             
         # Summary
-        print("\n--- Summary metrics ---")
+        print("\n--- Test metrics ---")
         metrics = test_metrics_computer.summary()
         for k in test_params["metrics"]:
             print(f"{k}: {metrics[k]}")
