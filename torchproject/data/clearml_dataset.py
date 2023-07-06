@@ -1,6 +1,3 @@
-"""
-Class for versioning and management of data
-"""
 import numpy as np
 from clearml import Task
 from clearml import Dataset
@@ -12,10 +9,11 @@ try:
 except ImportError:
     pass
 
-PROJECT_NAME = 'ObjDetection'
+PROJECT_NAME = 'Obj_Detect'
 EXAMPLES_DIR = '/mnt/raid10/datasets/clearml_examples'
 MANIFEST_EXT = '.csv'
 # where example files are stored
+
 
 def parse_manifest_path(manifest_path:str) -> dict:
     """
@@ -54,6 +52,16 @@ def parse_manifest_path(manifest_path:str) -> dict:
 
 
 def get_version_from_path(manifest_path:str) -> str:
+    """
+    Extract version info from manifest path
+    Args:
+        manifest_path (str): /path/to/file.v{X}.{Y}-{postfix}
+    Raises:
+        ValueError: "Failed to extract version info 
+                    from '{manifest_path}'"
+    Returns:
+        str: '{X}.{Y}-{postfix}'
+    """
     parsed = parse_manifest_path(manifest_path)
     x, y = parsed["major_version"], parsed["minor_version"]
     version = f"{x}.{y}"
@@ -67,7 +75,7 @@ def get_pie_figure(fracs:List[int], names:List[str]):
     """
     Plot pie figure (SVG filter pie)
     Args:
-        fracs (list[int]): list of percents (int)
+        fracs (list[int]): list of counts (int)
         names (list[str]):
     Returns:
         plt.figure
@@ -75,8 +83,13 @@ def get_pie_figure(fracs:List[int], names:List[str]):
     # validate input
     if len(fracs) != len(names):
         raise ValueError("Mismatch number of 'fracs' and 'names'")
-    if sum(fracs) != 100:
-        raise ValueError("Sum of fracs must be 100")
+
+    # to int persents
+    s = sum(fracs)
+    fracs = [int(fr / s * 100) for fr in fracs]
+    assert 100 - len(fracs) <= sum(fracs) <= 100
+    while sum(fracs) != 100:
+        fracs[0] += 1
     
     # make a square figure and axes
     fig = plt.figure(figsize=(6, 6))
@@ -96,6 +109,9 @@ def get_pie_figure(fracs:List[int], names:List[str]):
 
 
 class ClearmlDataset:
+    """ Don't forget to do commit after uploading 
+    plots, files, tables, etc
+    """
     __project_name = 'Datasets/' + PROJECT_NAME
     __dataset_name = PROJECT_NAME.lower()
 
@@ -135,6 +151,7 @@ class ClearmlDataset:
         Task.init(project_name=cls.__project_name, 
                   task_name=cls.__dataset_name, 
                   task_type=Task.TaskTypes.data_processing,
+                  output_uri=EXAMPLES_DIR,
                   auto_connect_frameworks=False,
                   auto_resource_monitoring=False, 
                   auto_connect_streams=False)
@@ -184,17 +201,17 @@ class ClearmlDataset:
         ids = [ds["id"] for ds in datasets]
         return ids
     
-    def add_metadata(self, **kwargs):
+    def add_metadata(self, datasize:int, **kwargs):
         """
         Metadata are visualized in 
         ClearML Task -> configuration -> properties
         It may refer to transformation info, like clean method 
-        or dataset size (i.e. number of examples)
         Args:
+            datasize (int): number of examples - neccessary param
             key1: value
             key2: {"value": value, "description": "example"}
         """
-        self.dataset._task.set_user_properties(**kwargs)
+        self.dataset._task.set_user_properties(datasize=datasize, **kwargs)
 
     def get_metadata(self, key:Optional[str]=None):
         """
@@ -288,27 +305,22 @@ class ClearmlDataset:
             report_interactive=True
         )
 
-    def add_files(self, fpath:Union[str, List[str]], 
-                  dataset_path:Optional[str]=None):
+    def add_example(self, fpath:str, 
+                    name:Optional[str]='example'):
         """
-        Add some file to dataset as an example
+        Add some media file as an example. It can be viewed in
+        Task information -> Debug samples
         NOTE: Don't add large files
         Args:
             fpath (str): /path/to/file
-            dataset_path (str, None): folder where the file will be 
-                stored in dataset
         """
-        if isinstance(fpath, str):
-            fpath = [fpath]
-        for f in fpath: 
-            self.dataset.add_files(
-                path=f,
-                dataset_path=dataset_path
-            )
+        self.logger.report_media(title='examples', 
+                                 series=name,
+                                 local_path=fpath,
+                                 stream=None,
+                                 delete_after_upload=False)
 
     def commit(self):
-        self.dataset.upload(max_workers=1, 
-                            output_url=EXAMPLES_DIR)
         self.dataset.finalize()
 
 
@@ -318,55 +330,59 @@ if __name__ == '__main__':
     
     # define parents
     previous = None  # no parents
-    # previous = ['e14aa07711e641a8b422e35d0a8354b6']  # one parent
-    # previous = ['e14aa07711e641a8b422e35d0a8354b6',  # two parents
-    #             'cdb0560d61f3401583b4bbeae54b443f']
+    # previous = ['48b8d22437624e519f6a177eddcfcd36']  # one parent
+    # previous = ['8ccc9f696ebb4ea1b1b5f79adf200851',  # two parents
+    #             'ada9f6d0fe0b4ee880b976988a09fdae']
     
-    manifest = '/mnt/raid10/datasets/objdetect/manifests/v1.4-valid.csv'
-    version = None  # parsed from manifest - 1.4-valid
+    manifest = '/mnt/raid10/datasets/obj_detect/manifests/v1.2-valid.csv'
+    version = None  # parsed from manifest - 1.2-valid
     # version = '1.4'
     dataset = ClearmlDataset.create(manifest=manifest,
                                     version=version, 
                                     previous=previous,
-                                    description='add more data'
+                                    description='Add more data'
     )
 
     # Histogram
-    class_counts = [54, 29, 42]
+    class_counts = [5545, 6987, 9564]
     hist = np.array(class_counts, dtype=np.uint16)
     dataset.add_histogram(hist, 'Class balance', 
                           xtitle='classes', 
                           ytitle='count')
-    
-    # add metainfo
-    dataset.add_metadata(
-        method="downsampling",
-        alpha={"value": 0.45, "description": "balance factor"},
-    )
-
-    # add table
-    dataset.add_csv_table('/mnt/nvme/vovik/tests/dataset/examples/table.csv', 
-                          name='Classes')
-
+    # Plot Pie
     data_size = sum(class_counts)
     fracs = [cls_count / data_size for cls_count in class_counts]
     fracs = [round(f * 100) for f in fracs]
+    print(fracs)
     fig = get_pie_figure(fracs, ['pistol', 'rifle', 'knife'])
     dataset.add_figure(fig)
 
+    # add metainfo
+    dataset.add_metadata(
+        datasize=26000,
+        method="upsampling",
+        alpha={"value": 0.45, "description": "balance factor"},
+    )
+
+    # # add table
+    dataset.add_csv_table('/mnt/nvme/vovik/tests/dataset/examples/table.csv', 
+                          name='Classes')
+
     # add example content
-    dataset.add_files([
+    examples = [
         '/mnt/nvme/vovik/tests/dataset/examples/1_target.jpg',
-        '/mnt/nvme/vovik/tests/dataset/examples/2_target.jpg',
+        '/mnt/nvme/vovik/tests/dataset/examples/8_target.jpg',
         '/mnt/nvme/vovik/tests/dataset/examples/4_target.jpg',
         '/mnt/nvme/vovik/tests/dataset/examples/9_target.jpg',
-    ], 
-    dataset_path='example_images')
+    ]
+    for i, example in enumerate(examples):
+        dataset.add_example(example, str(i))
 
     dataset.commit()
 
-    # II. Get dataset
-    dataset = ClearmlDataset.get(version='latest')
-    manifest = dataset.get_metadata('manifest')
-    print(dataset.id)
-    print(manifest)
+
+    # # II. Get dataset
+    # dataset = ClearmlDataset.get(version='latest')
+    # manifest = dataset.get_metadata('manifest')
+    # print(dataset.id)
+    # print(manifest)
