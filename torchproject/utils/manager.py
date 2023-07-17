@@ -1,11 +1,11 @@
-import os.path as osp
 import mlflow
 from clearml import Task, Logger, TaskTypes
 from typing import Union, List
 import torch
 import numpy as np
+from sklearn import metrics
 
-PROJECT_NAME = 'VAD'
+PROJECT_NAME = 'TestProject'
 
 matrix = Union[np.ndarray, torch.Tensor]
 
@@ -204,6 +204,110 @@ class ClearMLManager(BaseManager):
                     xaxis="target", yaxis="predict"
         )
 
+    def plot_roc_curve(self, 
+                  preds:Union[torch.Tensor, np.ndarray], 
+                  targs:Union[torch.Tensor, np.ndarray], 
+                  pos_label:int=1,
+                  best_criteria:str='g-mean') -> float:
+        """ Plot ROC curve and returns AUC
+        Args:
+            preds (Tensor, np.ndarray): (N, ) float (probs) (0..1)
+            targs (Tensor, np.ndarray): (N, ) float (class labels)
+            pos_label (int): positive class index
+            best_criteria (str): 'g-mean'
+        Returns:
+            float: AUC value
+        """
+        if not isinstance(preds, np.ndarray):
+            preds = preds.numpy()
+        if not isinstance(targs, np.ndarray):
+            targs = targs.numpy()
+        fpr, tpr, threshs = metrics.roc_curve(targs, preds, 
+                                            pos_label=pos_label)
+        # (M, )
+        threshs = np.where(threshs <= 1, threshs, 1)
+        auc_score = metrics.auc(fpr, tpr)
+        data = np.stack((fpr, tpr), axis=1)
+        # plot
+        self.logger.report_scatter2d(
+            title='ROC curve',
+            series='auc={:.2f}'.format(auc_score),
+            scatter=data,
+            xaxis="FPR", yaxis="TPR (Recall)",
+            labels=threshs.tolist()
+        )
+        if best_criteria == 'g-mean':
+            g_means = np.sqrt(tpr * (1 - fpr))  # (M, )
+            ix = np.argmax(g_means)
+            value = g_means[ix]
+        else:
+            raise ValueError(f"Unknown best criteria '{best_criteria}'")
+        # Plot best point
+        self.logger.report_scatter2d(
+            title='ROC curve',
+            series="{}={:.3f}".format(best_criteria, value),
+            scatter=data[ix:ix+1],
+            xaxis="FPR", yaxis="TPR (Recall)",
+            labels=threshs[ix:ix+1].tolist(),
+            mode='markers'
+        )
+        return auc_score
+
+    def plot_pr_curve(self,
+                 preds:Union[torch.Tensor, np.ndarray], 
+                 targs:Union[torch.Tensor, np.ndarray], 
+                 pos_label:int=1,
+                 best_criteria:str='f1') -> float:
+        """ Plot Precision-Recall curve and returns AUC
+        Args:
+            preds (Tensor, np.ndarray): (N, ) float (probs)
+            targs (Tensor, np.ndarray): (N, ) float (class labels)
+            pos_label (int): positive class index
+            best_criteria (str): 'f1'
+        Returns:
+            float: AUC value
+        """
+        if not isinstance(preds, np.ndarray):
+            preds = preds.numpy()
+        if not isinstance(targs, np.ndarray):
+            targs = targs.numpy()
+        precs, recalls, threshs = \
+            metrics.precision_recall_curve(targs, preds, pos_label=pos_label)
+        precs, recalls = precs[ :-1], recalls[ :-1]
+        corrects = recalls * precs > 0  # bool
+        precs, recalls = precs[corrects], recalls[corrects], 
+        threshs = threshs[corrects]
+        assert np.all((0 < threshs) & (threshs < 1))
+        data = np.stack((recalls, precs), axis=1)
+        # (M, 2)
+        # NOTE: xaxis=recalls, yaxis=precisions 
+        auc_score = metrics.auc(recalls, precs)
+
+        # plot
+        self.logger.report_scatter2d(
+            title='PR curve',
+            series='auc={:.2f}'.format(auc_score),
+            scatter=data,
+            xaxis="Recall", yaxis="Precision",
+            labels=threshs.tolist()
+        )
+        if best_criteria == 'f1':
+            f1_scores = 2 * precs * recalls / (precs + recalls)  # (M, )
+            ix = np.argmax(f1_scores)
+            value = f1_scores[ix]
+        else:
+            raise ValueError(f"Unknown best criteria '{best_criteria}'")
+        # Plot best point
+        self.logger.report_scatter2d(
+            title='PR curve',
+            series="{}={:.3f}".format(best_criteria, value),
+            scatter=data[ix:ix+1],
+            xaxis="Recall", yaxis="Precision",
+            labels=threshs[ix:ix+1].tolist(),
+            mode='markers'
+        )
+        return auc_score
+
 
 class MLFlowManager(BaseManager):
     def __init__(self, url:str, 
@@ -318,8 +422,8 @@ if __name__ == '__main__':
         'subproject': True  # experiment format
     }
     experiment = 'experiment'
-    run_name = 'train-debug'
-    manager = ClearMLManager(**params, experiment='OCR/decoder-with-lm', run_name='example')
+    run_name = 'test'
+    manager = ClearMLManager(**params, experiment='test', run_name='curves')
 
     manager.log_config('config.yaml')
     tags = {
@@ -333,3 +437,13 @@ if __name__ == '__main__':
         "current_epoch": 2
     }
     manager.add_tags(tags)
+
+    # ROC and PR curves
+    B, C = 10, 2  # datasize and n_classes
+    pred = np.random.rand(B, C)
+    targ = np.random.randint(0, 2, (B, C)).astype(np.float32)
+
+    pred = np.reshape(pred, -1)
+    targ = np.reshape(targ, -1)
+    manager.plot_pr_curve(pred, targ)
+    manager.plot_roc_curve(pred, targ)
