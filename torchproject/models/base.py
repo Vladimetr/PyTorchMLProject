@@ -1,52 +1,64 @@
-import pandas as pd
-import torch
 from typing import Tuple
-from ..preprocess import init_features_extractor
+from abc import ABCMeta, abstractmethod
+# import pandas as pd
+import torch
+from torch import Tensor
+from ..preprocess import init_preprocessor
 
-class Model(torch.nn.Module):
-    def __init__(self, features:dict=None, *args, **kwargs):
-        super().__init__()
-        self.accumulated_grads = []
-        if features:
-            features_name = list(features.keys())[0]
-            features_params = features[features_name]
-            self.features = init_features_extractor(features_name,
-                                                    features_params)
+
+class BaseModel(torch.nn.Module,
+                metaclass=ABCMeta):
+    def __init__(self, 
+                 n_classes:int=2,
+                 preprocess_cfg:dict=None,
+                 device:str="cpu",
+                 ):
+        super(BaseModel, self).__init__()
+        self.n_classes = n_classes
+        if preprocess_cfg:
+            preprocess_cfg = dict(preprocess_cfg)  # copy
+            preprocess_cfg["device"] = device
+            self.preprocessor = init_preprocessor(preprocess_cfg)
         else:
-            self.features = None
+            self.preprocessor = None
 
-    def init_params(self, *args, **kwargs):
+    def to(self, device:str) -> None:
+        if self.preprocessor is None:
+            return
+        self.preprocessor.to(device)
+
+    def init_weights(self, *args, **kwargs):
         """
         Set specific weights initialization
         """
         raise NotImplementedError()
     
-    def to(self, *args, **kwargs):
-        if self.features:
-            self.features = self.features.to(*args, **kwargs)
-        return super().to(*args, **kwargs)
-    
-    def forward(self, x:torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def preprocess(self, x:Tensor) -> Tensor:
+        """
+        Returns:
+            (B, F, T)
+        """
+        if self.preprocessor is None:
+            return x
+        return self.preprocessor(x)
+
+    @abstractmethod
+    def forward(self, x:Tensor) -> Tuple[Tensor, Tensor]:
         """
         B - batch size
-        T - time dim
-        S - sample size
         F - feature dim
+        T - time dim
         C - n classes
         Args:
-            features (B, F, T): input features
+            features (B, F, T): input features (already preprocessed)
             or
-            sample (B, 1, S): raw sample
+            samples (B, 1, S): raw samples (preprocess required)
         Returns:
             tuple
               (B, C): output logits
               (B, C): output probs (output of softmax)
         """
-        if self.features:
-            # (B, 1, S)
-            x = self.features(x)
-            # (B, F, T)
-        return x
+        pass
 
     def get_num_params(self):
         total_n = 0
@@ -119,8 +131,8 @@ class Model(torch.nn.Module):
     def reset(self):
         self.accumulated_grads = []
 
-    def load(self, weights) -> None:
-        state_dict = torch.load(weights)
+    def load(self, weights_path:str) -> None:
+        state_dict = torch.load(weights_path)
         self.load_state_dict(state_dict)
 
     def save(self, weights_path: str):

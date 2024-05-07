@@ -2,7 +2,7 @@ import torch
 import torch
 import torch.nn as nn
 from torch.nn.utils import weight_norm
-from .base import Model
+from .base import BaseModel
 
 
 class Chomp1d(nn.Module):
@@ -79,48 +79,52 @@ class TemporalConvNet(nn.Module):
         return self.network(x)
     
 
-class TCNClassification(Model):
-    def __init__(self, timesteps, in_channels, channels, n_classes=3, 
+class TCNClassification(BaseModel):
+    def __init__(self, timesteps, in_channels, channels, 
                  kernel_size=3, hidden_dim=100, dropout=0.2,
-                 *args, **kwargs):
-        """
-        This classificator works for single frame (F, T)
-        Frames in batch (B, N, F, Tfr) will be computed undependently, 
-        i.e. (B, N, F, Tfr) -> (BN, F, Tfr).
-        If arg 'clip_frames' is defined, sequence of frames N
-        will be pooled into sequence of clips N* using linear softmax.
-        N* = N // clip_frames
-        Args:
-            timesteps: time dim Tfr in input
-            in_channels: feature dim F in input
-            n_classes: number of classes C in output
-        """
-        super(TCNClassification, self).__init__(*args, **kwargs)
+                 n_classes=2,
+                 preprocess_cfg:dict=None,
+                 training:bool=False,
+                 device:str='cpu'
+                 ):
+        super().__init__(
+            n_classes=n_classes, 
+            device=device, preprocess_cfg=preprocess_cfg
+        )
         self.tcn = TemporalConvNet(in_channels, channels, kernel_size, dropout)
         self.out_dim = timesteps*channels[-1]
         self.fc1 = nn.Linear(self.out_dim, hidden_dim)
         self.act1 = nn.ReLU()
         self.fc = nn.Linear(hidden_dim, n_classes)  
         self.act = nn.Softmax(dim=1)
-        self.n_classes = n_classes
-        
+        self.to(device)
+        self.train() if training else self.eval()
+
+    def to(self, device) -> None:
+        if self.preprocessor:
+            self.preprocessor.to(device)
+        self.tcn.to(device)
+        self.fc1.to(device)
+        self.act1.to(device)
+        self.fc.to(device)
+        self.act.to(device)
+
     def forward(self, x):
         """
         B - batch size
-        F - feature dim (for ex. mels)
-        N - frame sequence length
-        N* - clip sequence length
+        F - feature dim
         T - time dim
         C - n classes
         Args:
-            features (B, F, T): input features
+            features (B, F, T): input features (already preprocessed)
             or
-            sample (B, 1, S): raw sample
-        Return:
-            tuple:
-                logits, probs: (B, C)
+            samples (B, 1, S): raw samples (preprocess required)
+        Returns:
+            tuple
+              (B, C): output logits
+              (B, C): output probs (output of softmax)
         """
-        x = super().forward(x)
+        x = self.preprocess(x)
         # (B, F, T)
         x = self.tcn(x)                # (_, C[-1], T)
         x = x.view(-1, self.out_dim)   # (_, C[-1]*T)
@@ -137,21 +141,18 @@ class TCNClassification(Model):
 if __name__ == '__main__':
     bs = 10            # B
     f_dim = 40         # F
-    t_dim = 26         # T
-    n_classes = 3      # C
-    n = 150            # N
-    clip_frames = 50   # U
+    t_dim = 751        # T
+    n_classes = 2      # C
     
-    model = TCN_classification(timesteps=t_dim, in_channels=f_dim,
-                               n_classes=n_classes,
-                               channels=[64, 32, 16],
-                               clip_frames=clip_frames,
-                               )
-    dummy_input = torch.rand(bs, n, f_dim, t_dim)
+    model = TCNClassification(timesteps=t_dim, in_channels=f_dim,
+                              n_classes=n_classes,
+                              channels=[64, 32, 16],
+                              )
+    dummy_input = torch.rand(bs, f_dim, t_dim)
                            
-    # (B, N, F, T)
+    # (B, F, T)
     out = model(dummy_input)
-    # (B, N, C)
+    # (B, C)
     
     print(out[0].size(), out[1].size())
     

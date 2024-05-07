@@ -1,55 +1,108 @@
 """
-Validation and preprocessing of raw audio
+Preprocess raw audio sample
 """
 from typing import Union
-from collections import OrderedDict
-import pandas as pd
 import torch
-from torch import Tensor
+from torch import Tensor, nn
+from torchaudio.transforms import MelSpectrogram
 from . import utils
 
+SR = 8000  # sample rate
 
-class BasePreprocess:
-    """
-    Extract vector for model from
-    features dict
-    """
-    def __init__(self):
-        pass
 
-    def preprocess(self, features:OrderedDict) -> Tensor:
+class BasePreprocess(nn.Module):
+    """
+    Preprocess takes loaded audio (source sample (1, S))
+    and gives tensor for model
+    """
+    def __init__(self, sr:int=SR, device:str="cpu"):
+        super().__init__()
+        self.sr = sr
+        self.to(device=device)
+
+    def __call__(self, samples:Tensor) -> Tensor:
         """
-        Vanila preprocess: extract values without preprocess
+        Features extraction
         Args:
-            features (OrderedDict): Example {"num_addresses": 4789, ...}
-        Returns:
-            tensor: model input
+            samples (tensor (*, 1, S)):
+        Return:
+            tensor (*, 1, S): source samples
         """
-        values = list(features.values())
-        x = torch.tensor(values)
-        return x
+        return samples
+    
+
+class LogmelPreprocess(BasePreprocess):
+    def __init__(self, 
+                 sr:int=SR,
+                 wnd_step:float=0.008,
+                 wnd_len:float=0.010,
+                 nfilt:int=40,
+                 nfft:int=512,
+                 device:str="cpu"):
+        super().__init__(sr=sr, device=device)
+        self.features = MelSpectrogram(sample_rate=sr,
+                                       n_fft=nfft,
+                                       f_max=sr // 2,
+                                       win_length=int(wnd_len * sr),
+                                       hop_length=int(wnd_step * sr),
+                                       n_mels=nfilt)
+        self.features.to(device=device)
+
+    def __call__(self, samples:Tensor) -> Tensor:
+        """
+        Args:
+            sample (tensor (*, 1, S))
+        Return:
+            tensor (*, F, T): logmels
+        """
+        features = self.features(samples)
+        # (*, 1, F, T)
+        return torch.squeeze(features, features.dim()-3)
 
 
 # Define your own preprocess algorithm
 # by inherit from BasePreprocess
 
 
-def init_preprocessor(preprocess_params:Union[dict, None]
-                            ) -> BasePreprocess:
-    if preprocess_params is None:
+def init_preprocessor(preprocess_cfg:Union[dict, None],
+                      device:str="cpu"
+                      ) -> BasePreprocess:
+    """
+    preprocess_cfg (dict, None): 
+        {
+            "{class_name}": kwargs (dict)
+        }
+        NOTE: if None, BasePreprocess is used
+    """
+    if preprocess_cfg is None:
         return BasePreprocess()
-    # other preprocessors
+    preprocess_cfg = dict(preprocess_cfg)  # copy
+    name = next(iter(preprocess_cfg))
+    params = preprocess_cfg[name]
+    try:
+        # define class
+        preprocessor = globals()[name]
+    except KeyError:
+        raise ValueError(f"Invalid preprocess name '{name}'")
+    try:
+        # init
+        preprocessor = preprocessor(**params, device=device)
+    except TypeError:
+        raise ValueError(f"Invalid preprocess params {params}")
+    return preprocessor
 
 
 
 if __name__ == '__main__':
     config = utils.config_from_yaml('config.yaml')
-    preprocess_params:dict = config["preprocess"]
+    device = "cuda"
 
-    data_path = 'data/processed/test.v1.csv'
-    preprocessor = init_preprocessor(preprocess_params)
+    preprocessor = init_preprocessor(config["preprocess"], 
+                                     device=device)
 
-    data = pd.read_csv(data_path, index_col=False)
-    for data_i in data.to_dict(orient='records'):
-        model_inp = preprocessor.preprocess(data_i)
-        print(model_inp)
+    # (BS, 1, S)
+    samples = torch.rand((3, 1, 48000)).to(device=device)
+    inp = preprocessor(samples)
+    print(inp.shape)
+    # (BS, F, T)
+    
