@@ -5,21 +5,22 @@ with different data versions
 from os import path as osp
 import re
 from abc import ABCMeta
-from typing import Iterable, Optional, List
+from typing import Iterable, Optional, List, Union
 import argparse
 import pandas as pd
 from tqdm import tqdm
+from ..utils import get_next_version, get_version_from_path
+from ..utils.manager import ClearMLDataset
 
-COLUMNS = [
-    "path",   # abs/path/to/audio.wav
-    "shape",  # shape of numpy sample
-    "start",  # start of sample part
-    "end",    # end of sample part
-    "label"   # index of class
+
+CSV_SEP = ','
+VALID_LABELS = [
+    "mixer",
+    "game",
+    "user"
+
 ]
-CSV_SEP = ' '
-SR = 8000  # sample rate
-VALID_LABELS = [0, 1, 2]
+data_type = Union[str, List[str], pd.DataFrame]
 
 
 class DataProcessor(metaclass=ABCMeta):
@@ -33,54 +34,38 @@ class DataProcessor(metaclass=ABCMeta):
         """
         self.name = "some-process"
 
-    @staticmethod
-    def _get_next_version(manifest_path: str) -> str:
-        """
-        if 'corpuse.txt' -> 'corpuse_v2.txt'
-        if 'corpuse_v2.txt' -> 'corpuse_v3.txt'
-        """
-        assert osp.exists(manifest_path)
-        while True:
-            _, ext = osp.splitext(manifest_path)
-            fbasepath = manifest_path[ :-len(ext)]
-            # get version postfix '*.v6'
-            postfix_v = re.findall(r'.v\d+', fbasepath)
-            if not postfix_v:
-                # init first version
-                v1 = '.v1'
-                fbasepath += v1
-                postfix_v = [v1]
-            assert len(postfix_v) == 1
-            postfix_v = postfix_v[0]
-
-            # '.v5' -> 5
-            v = int(postfix_v[2: ])
-            # increment version
-            v += 1
-            # collate new fname
-            manifest_path = fbasepath[ :-len(postfix_v)] + f".v{v}" + ext
-            if not osp.exists(manifest_path):
-                break
-        return manifest_path
-    
     def _get_progress_bar(self, iter: Iterable) -> Iterable:
         bar_fmt = '| {n_fmt}/{total_fmt} {postfix}'
         iter = tqdm(iter, 
-                    desc=self.name, 
+                    desc="process", 
                     total=len(iter),
                     bar_format='{l_bar}{bar:29}' + bar_fmt)
         return iter
 
-    def _load_manifest(self, manifest_path: str):
-        self.data = pd.read_csv(manifest_path, sep=CSV_SEP)
-        self.data.sort_values(by=['path', 'start'], inplace=True)
+    def _load_data(self, data_path: str):
+        self.data = pd.read_csv(data_path, sep=CSV_SEP)
         self.data_size = len(self.data)
+        self.columns = self.data.columns
 
-    def _save_manifest(self, manifest_path: str, overwrite = False):
-        if osp.exists(manifest_path) and not overwrite:
-            manifest_path = self._get_next_version(manifest_path)
-        self.data.to_csv(manifest_path, sep=CSV_SEP,
+    def _load_datas(self, data_paths: List[str]):
+        datas = []
+        for data_path in data_paths:
+            data = pd.read_csv(data_path, sep=CSV_SEP)
+            datas.append(data)
+        self.data = pd.concat(datas, ignore_index=True)
+        self.data_size = len(self.data)
+        self.columns = self.data.columns
+
+    def _save_data(self, data_path: str, overwrite = False):
+        """
+        NOTE: if data_path exists and overwrite=False,
+            next version (v2->v3) will be created
+        """
+        if osp.exists(data_path) and not overwrite:
+            data_path = get_next_version(data_path)
+        self.data.to_csv(data_path, sep=CSV_SEP,
                          header=True, index=False)
+        return data_path
         
     def process_row(self, row: dict) -> dict:
         """
@@ -112,39 +97,56 @@ class DataProcessor(metaclass=ABCMeta):
                 assert list(row.keys()) == list(upd_row.keys()), \
                     f"Mismatch columns in row [{i}]"
                 # update row
-                self.data.loc[i] = [upd_row[k] for k in COLUMNS] 
+                self.data.loc[i] = [upd_row[k] for k in self.columns] 
             else:
                 delete_rows.append(i)
         # delete rows
         self.data.drop(delete_rows, inplace=True)
 
-    def process(self, manifest_in: str, 
-                manifest_out: Optional[str] = None):
-        self._load_manifest(manifest_in)
+    def process(self, data_in: data_type,
+                save_path: Optional[str]=None):
+        """
+        Main method for running process
+        Args:
+            data_in: path or list[path] to manifest.csv
+                or pd.Dataframe
+            save_path (str, None): /path/to/manifest.csv
+                If path exists, use next version (v2->v3)
+                If None, no save
+        Returns:
+            tuple
+              pd.DataFrame: processed data
+              str: /path/to/saved/data.csv or None
+        """
+        print(f"Process task {self.name}...")
+        if isinstance(data_in, str):
+            print(f" -input: {data_in}")
+            self._load_data(data_in)
+        elif isinstance(data_in, list):
+            print(f" -input: {data_in}")
+            self._load_datas(data_in)
+        elif isinstance(data_in, pd.DataFrame):
+            print(f" -input: DataFrame")
+            self.data = data_in.copy(deep=True)
 
         self.process_rows()
 
-        manifest_out = manifest_out or manifest_in
-        self._save_manifest(manifest_out, overwrite=False)
+        if save_path:
+            save_path = self._save_data(save_path, overwrite=False)
+            print(f" -output: {save_path}")
+
+        return self.data, save_path
         
 
 class DropDuplicatesProcessor(DataProcessor):
     """
-    Drop rows with same set of params
-    ["path", "start", "end"]
+    Drop duplucated rows
     """
     def __init__(self):
         self.name = 'drop-duplicates'
 
-    def process(self, manifest_in: str,
-                manifest_out: Optional[str] = None):
-        self._load_manifest(manifest_in)
-
-        columns = ["path", "start"]
-        self.data.drop_duplicates(subset=columns, inplace=True)
-
-        manifest_out = manifest_out or manifest_in
-        self._save_manifest(manifest_out, overwrite=False)
+    def process_rows(self):
+        self.data.drop_duplicates(inplace=True)
         
 
 class DropInvalidLabelsProcessor(DataProcessor):
@@ -161,54 +163,121 @@ class DropInvalidLabelsProcessor(DataProcessor):
             return {}
         return row
 
+class RemoveColumnsProcessor(DataProcessor):
+    """
+    Remove specific set of columns
+    """
+    def __init__(self, columns:List[str]):
+        self.name = 'drop-columns'
+        self.drop_columns = columns
+
+    def process_rows(self):
+        self.data.drop(self.columns, axis=1, inplace=True)
+
 
 class JoinManifestsProcessor(DataProcessor):
     def __init__(self):
         self.name = 'join-manifests'
 
-    def process(self, manifests_in: List[str], 
-                manifest_out: Optional[str] = None):
-        datas = []
-        for manifest_in in manifests_in:
-            self._load_manifest(manifest_in)
-            datas.append(self.data)
+    def process_rows(self):
+        pass
 
-        # collate pd.DataFrames
-        self.data = pd.concat(datas, ignore_index=True)
+    def process(self, data_in: data_type,
+                save_path: Optional[str]=None):
+        # DataProcessor.process do the same
+        return super().process(data_in, save_path)
 
-        manifest_out = manifest_out or manifest_in
-        self._save_manifest(manifest_out, overwrite=False)
+
+TASKS = {
+    "join-manifests": JoinManifestsProcessor,
+    "drop-duplicates": DropDuplicatesProcessor,
+    "drop-invalid-labels": DropInvalidLabelsProcessor,
+    
+}
+
+
+def pipeline(input:Union[str, List[str]], tasks:List[str], output:str,
+             save_steps:bool=False) -> pd.DataFrame:
+    """
+    Run pipeline of data processing
+    Args:
+        input (str, List[str]): path/to/data.csv or [path/to/data.csv]
+            If list, collate them first
+        tasks (list[str]): order is important. See TASKS
+        output (str): where to save final output
+        save_steps (bool): whether to save result for middle steps
+    Returns:
+        pd.DataFrame: final data
+    """
+    n = len(tasks)
+    if not n:
+        raise ValueError("List of tasks is empty")
+    
+    if isinstance(input, list) and tasks[0] != "join-manifests":
+        # collate first
+        tasks = ["join-manifests"] + tasks
+
+    out_data = None
+    for i, task in enumerate(tasks):
+        try:
+            processor : DataProcessor = TASKS[task]
+        except KeyError:
+            raise ValueError(f"Invalid task '{task}'")
+        
+        if i + 1 == n:
+            # final task
+            save_path = output
+        elif save_steps is None:
+            # without save
+            save_path = None
+        elif task == "join-manifests":
+            save_path = input if isinstance(input, str) else \
+                        input[0]
+
+        out_data, _ = processor.process(out_data or input, 
+                                        save_path=save_path)
+    
+    return out_data
+        
 
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description='Data processing pipeline')
-    parser.add_argument('--task', '-t', type=str, required=True,
-                        choices=['drop-duplicates',
-                                 'drop-invalid-labels',
-                                 'join-manifests',
-
-                                 ],
+    parser = argparse.ArgumentParser(description='Data processing functions')
+    parser.add_argument('--task', '-t', type=str,
+                        required=True,
+                        choices=TASKS,
                         help='task to apply')
     parser.add_argument('--input', '-i', type=str, 
                         nargs='+',
                         required=True,
-                        help='path/to/input/manifest.csv')
+                        help='path/to/input/data(s).csv')
     parser.add_argument('--output', '-o', type=str, 
-                        help='path/to/output/manifest.csv')
-    parser.add_argument('rest', nargs=argparse.REMAINDER)
+                        help='path/to/output/data.csv')
+    parser.add_argument('--clearml', action='store_true', 
+                        default=False, 
+                        help='whether to use ClearML')
+    parser.add_argument('--description', '-d', type=str, default=None, 
+                        help='Description for ClearML')
     args = parser.parse_args()
+    task_name = args.task
+    inputs = args.input
+    out = args.output
+    desc = args.description
 
-    tasks = {
-        "drop-duplicates": DropDuplicatesProcessor,
-        "drop-invalid-labels": DropInvalidLabelsProcessor,
-        "join-manifests": JoinManifestsProcessor,
-
-    }
-    task = tasks[args.task]()
-
-    inp = args.input
-    if len(inp) == 1:
-        inp = inp[0]
-
+    task = TASKS[task_name]()
     # run task
-    task.process(inp, args.output)
+    save_path = out or args.input[0]
+    data, save_path = task.process(inputs, save_path=save_path)
+
+    if args.clearml:
+        prevs = []
+        for inp in inputs:
+            vers = get_version_from_path(inp)
+            prev = ClearMLDataset.get(vers)
+            if prev:
+                prevs.append(prev.id)
+        
+        manager = ClearMLDataset.create(save_path, 
+                                        previous=prevs,
+                                        tags=[task_name],
+                                        description=desc or task_name)

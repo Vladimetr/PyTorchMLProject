@@ -1,76 +1,54 @@
-n_classes: &n_classes 3
+# order is critical for model
 classes:
-  - noise
-  - music
-  - speech
-pos_classes: [1]  # class(es) that are assigned as positive in bin conf matrix
-frame: &frame 0.2  # classificated frame len (sec)
-sample_rate: &sr 8000
+  - mixer
+  - game
+  - user
+  
+model:
+  class: random_forest
+  max_depth: 3
 
-# -------------------- Architectures --------------------
-# valid models
-models:
-  tcn:
-    timesteps: 26             # T
-    in_channels: 40           # F
-    channels: [64, 32, 16]    # 4 TempBlocks
-    hidden_dim: 100
-    n_classes: *n_classes
-    kernel_size: 5
-    dropout: 0.1
-    weights: '/mnt/nvme/vovik/tutorial/torch_project/dev/experiments/test-experiment/train/075/weights/1.pt'
-    features:  # {'name': {params}} or null
-      logmel:
-        sr: *sr
-        wnd_step: 0.008
-        wnd_len: 0.010
-        nfilt: 40   # F
-        nfft: 512
-
-# what model to use
-model: &model tcn
-
-loss: 
-  cross_entropy:
-    weights: [0.8, 0.1, 0.1]  # must be equal to n_classes
-
-preprocess:
-  sr: *sr
-  codec: pcm_s16le
-  min_dur: 0.2  # sec
-  max_dur: 300  # sec
-  format: wav
-  frame: *frame   # split on frames
-  features: null  # {'name': {params}} or null
-    # logmel:
-    #   sr: *sr
-    #   wnd_step: 0.008
-    #   wnd_len: 0.010
-    #   nfilt: 40   # F
-    #   nfft: 512
+# only for inference
+preprocess: null
 
 train:
-  loss: cross_entropy
-  metrics: ["CrossEntropyLoss", "Precision", "Recall"]
-  opt: &opt Adam
-  learning_rate: &lr 0.0001
-  weight_decay: 0.00001  # reg loss
-  grad_norm: 2.0
-  pretrained: ''
+  metrics:
+    - acc
+    - TP
+    - FN
+    - FP
+  pretrained: null
+  # only for iterative training
+  loss:
+    class: cross_entropy
+  opt: Adam
+  learning_rate: 0.001
+  weight_decay: 0.005
+  grad_norm: 1.0
+
 
 test:
-  metrics: ["CrossEntropyLoss", "Precision", "Recall", "Acc"]
-  loss: cross_entropy
+  step_metrics:  # only scalars
+    - acc
+    - TP
+    - FN
+    - FP
+  # for total test set
+  sum_metrics:
+    - acc
+    - precision
+    - recall
+    - conf_matrix
+  # via manager
+  plot_conf_matrix: False
+  plot_pr: False   # Precision-Recall curve
+  plot_roc: False  # ROC curve
 
 manager:
-  mlflow:
-    url: http://192.168.11.181:3500
   clearml:
     key_token: R5V25ELMF8K44HN6ZDP8
     secret_token: QJPm5a8Ef4L7Ag5QRuemh93RFEXHSdXaxnkwhM0dRwa0mtf9qE
     subproject: True  # experiment format
   hparams:
-    model: *model
     train:
-      opt: *opt
-      learning_rate: *lr
+      learning_rate: 0.001

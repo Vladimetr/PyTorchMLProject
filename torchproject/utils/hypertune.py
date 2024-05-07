@@ -1,14 +1,16 @@
 from typing import List, Union
 import itertools
-import argparse
-from . import utils
-from . import train
 
 
 # NOTE: subparams are separated using '.'
 tuned_params = {
-    'model.cnn.n_layers': [2, 3],
-    'loss.cross_entropy.pos_weight': [[0.8, 0.2], [0.6, 0.4]],
+    'vad.model.weights': [
+        'weights1.pt',
+        'weights2.pt',
+        'weights3.pt',
+    ]
+    'vad.inference.pad': [1, 2],
+    'vad.inference.threshold': [0.6, 0.7, 0.8],
 
 }
 
@@ -47,8 +49,6 @@ def get_combinations(params:dict) -> List[dict]:
 
 
 def config_update_params(config:dict, params:dict) -> dict:
-    """
-    """
     config = dict(config)  # copy
     for param, value in params.items():
         subparams = param.split('.')
@@ -64,74 +64,16 @@ def config_update_params(config:dict, params:dict) -> dict:
     return config
 
 
-def main(train_data:str,
-         test_data:str,
-         config:Union[str, dict]='config.yaml',
-         epochs:int=15,
-         batch_size:int=20,
-         experiment:str='experiment',
-         use_mlflow:bool=False,
-         use_clearml:bool=False,
-         tensorboard:bool=False,
-         log_step:int=1,
-    ):
-    """
-    """
-    # Load base config
-    if isinstance(config, str):
-        # load config from yaml
-        config = utils.config_from_yaml(config)
+# load base config
+with open("config.yaml") as f:
+    config = oyaml.load(f, Loader=oyaml.FullLoader)
+base_config = OrderedDict(config)
 
-    base_config = config
-    combinations = get_combinations(tuned_params)
-    n_configs = len(combinations)
-    for i, combination in enumerate(combinations):
-        print(f"{i+1}/{n_configs} Train...")
+combinations = get_combinations(tuned_params)
+n_configs = len(combinations)
+for i, combination in enumerate(combinations):
+    print(f"{i+1}/{n_configs} test ...")
 
-        config = config_update_params(base_config, combination)
+    config = config_update_params(base_config, combination)
 
-        train.main(train_data=train_data,
-             test_data=test_data,
-             config=config,
-             epochs=epochs,
-             batch_size=batch_size,
-             experiment=experiment,
-             use_mlflow=use_mlflow,
-             use_clearml=use_clearml,
-             tensorboard=tensorboard,
-             log_step=log_step,
-             comment=f'hypertune-{i+1}'
-        )
-        
-
-if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description='train CNN')
-    parser.add_argument('--config', '-cfg', type=str, 
-                        default='config.yaml', 
-                        help='path/to/config.yaml')
-    parser.add_argument('--train-data', type=str, 
-                        default='data/train_manifest.csv')
-    parser.add_argument('--test-data', type=str, 
-                        default='data/test_manifest.csv')
-    parser.add_argument('--batch-size', '-bs', type=int, 
-                        default=100)
-    parser.add_argument('--epochs', '-e', type=int, default=10)
-    parser.add_argument('--experiment', '-exp', type=None, 
-                        default='experiment', 
-                        help='Name of existed MLFlow experiment')
-    parser.add_argument('--mlflow', action='store_true', 
-                        dest='use_mlflow', default=False, 
-                        help='whether to use MLFlow for experiment manager')
-    parser.add_argument('--clearml', action='store_true', 
-                        dest='use_clearml', default=False, 
-                        help='whether to use ClearML for experiment manager')
-    parser.add_argument('--tensorboard', '-tb', action='store_true', 
-                        default=False, 
-                        help='whether to use Tensorboard')
-    parser.add_argument('--log-step', '-ls', type=int, default=1, 
-                        help='interval of log metrics')
-    args = parser.parse_args()
-    # Namespace to dict
-    args = vars(args)
-
-    main(**args)
+    test(config)

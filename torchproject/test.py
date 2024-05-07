@@ -1,28 +1,18 @@
-"""
-Скрипт запуска модели на тестовой выборке,
-вывод результатов метрик
-"""
-
 import torch
 import os
 import os.path as osp
-from math import isnan
-from typing import Union
+from typing import Union, Tuple
 import argparse
-from torch.utils.tensorboard import SummaryWriter
-from .models import Model
-from .data import CudaDataLoader, BucketingSampler, AudioDataset
+from math import isnan
+from torch import Tensor
+from .models import MLModel
+from .data import CudaDataLoader, BucketingSampler, BlockChainDataset
 from . import utils
-from .utils.manager import BaseManager, MLFlowManager, ClearMLManager
-from .models import model_init
-from .metrics import init_loss, BinClassificationMetrics, Loss
-from .utils import EXPERIMENTS_DIR, TB_LOGS_DIR
+from .utils.manager import ClearMLManager
+from .models import model_init, MLModel, IterativeModel
+from .metrics import init_loss, ClassificationMetrics, Loss
+from .utils import EXPERIMENTS_DIR
 
-manager = None
-
-
-class ConfigError(Exception):
-    pass
 
 def get_train_run(experiment:str, run_id:int) -> Union[str, None]:
     """
@@ -72,71 +62,35 @@ def get_test_run(experiment:str, train_run_id:int=None) -> str:
     return prefix + str(new_run_id)
     
 
-def log_metrics(metrics:dict, step:int, 
-                metrics_computer=BinClassificationMetrics,
-                manager:BaseManager=None,
-                tb_writer:SummaryWriter=None):
-    metrics_computer.log_metrics(metrics, step=step)
-    # Manager
-    if manager:
-        manager.log_step_metrics(metrics, step)
-    # Tensorboard
-    if tb_writer:
-        for metric_name, value in metrics.items():
-            if metric_name == 'loss':
-                tb_writer.add_scalar('Loss/CrossEntropy', value, 
-                                     step)
-            else:
-                tb_writer.add_scalar('Metrics/' + metric_name, 
-                                     value, step)
-
-def status_handler(func):
-    def run_train(*args, **kwargs):
-        try:
-            func(*args, **kwargs)
-        except (Exception, KeyboardInterrupt) as error:
-            # train is failed
-            if manager is not None:
-                manager.set_status("FAILED")
-            raise error
-        else:
-            # train is successfull
-            if manager is not None:
-                manager.set_status("FINISHED")
-    return run_train
-
-
 def test_step(
-        model:Model,
-        batch:tuple,
-        loss_computer:Loss,
-        metrics_computer:BinClassificationMetrics,
+        model:MLModel,
+        batch:Tuple[Tensor, Tensor],
+        metrics_computer:ClassificationMetrics,
+        loss_computer:Loss=None,
         ) -> dict:
     x, target = batch
     with torch.no_grad():
-        logits, probs = model(x)
+        logits, probs = model.predict(x)
     # logits - before activation (for loss)
     # probs - after activation   (for acc)
-
-    # CrossEntropy loss
-    loss, loss_values = loss_computer(logits, target)
-
-    # Check if loss is nan
-    if torch.isnan(loss) or \
-        any([isnan(v) for v in loss_values.values()]):
-        message = f"Loss is NaN"
-        raise Exception(message)
-
+        
     # Metrics computing
-    metrics = metrics_computer.compute(probs, target,
+    metrics = metrics_computer.compute(probs.cpu(), target.cpu(),
                                        accumulate=True)
-    metrics_computer.add_summary(loss_values)
-    metrics.update(loss_values)
+    # CrossEntropy loss
+    if loss_computer:
+        loss, loss_values = loss_computer(logits, target)
+        # Check if loss is nan
+        if torch.isnan(loss) or \
+            any([isnan(v) for v in loss_values.values()]):
+            message = f"Loss is NaN"
+            raise Exception(message)
+        metrics.update(loss_values)
+    
     return metrics
 
 
-@status_handler
-def main(data:str,
+def test(data:str,
          config:Union[str, dict]='config.yaml',
          batch_size:int=500,
          gpu_id:int=0,
@@ -144,9 +98,7 @@ def main(data:str,
          experiment:str='experiment',
          run_id:int=None,
          weights:str='best.pt',
-         use_mlflow:bool=False,
-         use_clearml:bool=False,
-         tensorboard:bool=False,
+         clearml:bool=False,
          data_shuffle:bool=True,
          log_step:int=1,
          comment:str=None,
@@ -166,10 +118,7 @@ def main(data:str,
     comment (str): postfix for experiment run name
     """
     experiment = experiment.lower().replace(' ', '_')
-    global manager
-    if use_clearml and use_mlflow:
-        raise ValueError("Choose either mlflow or clearml for management")
-    writer, logger, run_dir = None, None, None
+    logger, run_dir, manager = None, None, None
     hparams = dict()
 
     # Validate device
@@ -198,7 +147,6 @@ def main(data:str,
     else:
         config_yaml = '/tmp/config.yaml'
         config = dict(config)  # copy
-    manager_params = config["manager"]
 
     if not no_save:
         # Define test Run name
@@ -212,27 +160,21 @@ def main(data:str,
         os.makedirs(run_dir)
 
         # Init manager
-        if use_mlflow or use_clearml:
-            params = {
+        if clearml:
+            params = config["manager"]
+            params.update({
                 "experiment": experiment,
                 "run_name": 'test-' + run_name,
                 "train": False,
-            }
-            if use_clearml:
-                params.update(manager_params["clearml"])
-                manager = ClearMLManager(**params)
-            else:
-                params.update(manager_params["mlflow"])
-                manager = MLFlowManager(**params)
-
-            manager.log_hyperparams(manager_params["hparams"])
+            })
+            manager = ClearMLManager(**params)
             # log and update config if it's defined in experiment
             config_yaml = manager.log_config(config_yaml)
             config = utils.config_from_yaml(config_yaml)
+            # log and update hparams if it was changed
             hparams = config["manager"]["hparams"]
-            # log and update if it was changed
             hparams = manager.log_hyperparams(hparams)  
-            print(f"Manager experiment run name: {'test-' + run_name}")
+            print(f"Manager experiment run name: {'train-' + run_name}")
 
         # save config
         config_yaml = osp.join(run_dir, 'config.yaml')
@@ -242,18 +184,18 @@ def main(data:str,
         logger = utils.get_logger('test', logfile)
         print(f"Experiment storage: '{run_dir}'")
 
-    # Load main params
+    # Hyperparams overwrite config params
     utils.update_given_keys(config, hparams)
-    test_params = config["test"]
-    model_name = config["model"]
-    model_params = config["models"][model_name]
-    preprocess_params = config["preprocess"]
-    n_classes = config["n_classes"]
+    params = config["test"]
+    classes = config["classes"]
+    model_cfg = config["model"]
+    # Redefine weights
+    if weights:
+        model_cfg["weights"] = weights
 
     # Load test data
-    test_set = AudioDataset(data, n_classes=n_classes,
-                            preprocess_params=preprocess_params)
-    data_size = len(test_set)
+    test_set = BlockChainDataset(data, classes=classes)
+    data_size = len(data_size)
     sampler = BucketingSampler(test_set, batch_size, shuffle=data_shuffle)
     test_set = CudaDataLoader(gpu_id, test_set, 
                               collate_fn=test_set.collate,
@@ -261,15 +203,11 @@ def main(data:str,
                               batch_sampler=sampler)
     test_steps = len(test_set)  # number of test batches
 
-    # Redefine weights
-    if weights:
-        model_params["weights"] = weights
-
     # Add specific info
     if manager:
         manager.set_iterations(test_steps)
-        weights_name = osp.split(model_params["weights"])[1]
-        manager.add_tags({'weights': weights_name}, rewrite=True)
+        weights_name = osp.split(model_cfg["weights"])[1]
+        manager.add_tags([f"weights: {weights_name}"])
 
     # Define metadata
     metadata = {
@@ -278,7 +216,7 @@ def main(data:str,
             "data_size": data_size,
             "test_steps": test_steps,
             "storage": run_dir,
-            "weights": model_params["weights"],
+            "weights": model_cfg["weights"],
             
     }
     utils.pprint_dict(metadata)
@@ -289,35 +227,25 @@ def main(data:str,
             manager.log_metadata(metadata)
 
     # Define model
-    if not model_params["weights"]:
-        raise ConfigError("Weights are not defined")
-    model = model_init(model_name,
-                       model_params,
-                       train=True,
+    if not model_cfg["weights"]:
+        raise ValueError("Weights are not defined")
+    model = model_init(model_cfg,
+                       train=False,
                        device=device)
     
-    # Tensorboard writer
-    if not no_save and tensorboard:
-        log_dir = osp.join(TB_LOGS_DIR, experiment, 'test', run_name)
-        if not osp.exists(log_dir):
-            os.makedirs(log_dir)
-        writer = SummaryWriter(log_dir=log_dir)
-        print(f"Tensorboard logs: '{log_dir}'")
-
-    # Define loss
-    loss_name = test_params["loss"]
-    loss_params = config["loss"][loss_name]
-    loss = init_loss(loss_name, loss_params, device=device)
+    iterative_train = isinstance(model, IterativeModel)
+    if iterative_train:
+        # Define loss
+        loss_name = config["loss"]
+        loss_params = config["loss"][loss_name]
+        loss = init_loss(loss_name, loss_params, device=device)
 
     # Init test metrics computer
-    compute_metrics = test_params["metrics"]
-    metrics_computer = BinClassificationMetrics(
-        step=True,
-        n_classes=n_classes,
-        pos_classes=config["pos_classes"],
-        compute_metrics=compute_metrics,
-        logger=logger
-    )
+    metrics_computer = ClassificationMetrics(
+                                classes=classes,
+                                metrics=params["step_metrics"],
+                                step=True, epoch=True,
+                                logger=logger)
 
     test_set.shuffle(15)
     for step, batch in enumerate(test_set):
@@ -327,30 +255,27 @@ def main(data:str,
             loss,
             metrics_computer
         )
-        metrics = {k: metrics[k] for k in test_params["metrics"]}
         if (step + 1) % log_step == 0:
-            log_metrics(metrics, step=step+1, 
-                        metrics_computer=metrics_computer,
-                        manager=manager,
-                        tb_writer=writer)
+            metrics_computer.log_metrics(metrics, step=step)
+            if manager:
+                manager.log_step_metrics(metrics, step)
 
-    sum_metrics = metrics_computer.summary()
+    sum_metrics = metrics_computer.summary(params["sum_metrics"])
     print("\n--- Summary metrics ---")
-    for k in test_params["metrics"]:
-        print(f"{k}: {sum_metrics[k]}")
+    metrics_computer.pprint(sum_metrics, line=False)
     # Print summary conf matrix
-    if n_classes > 2:
-        metrics_computer.print_conf_matrix(sum_metrics["conf_matrix"])
-    bin_conf_matrix = sum_metrics["bin_conf_matrix"]
-    metrics_computer.print_conf_matrix(bin_conf_matrix)
+    conf_matrix = metrics_computer.sum_conf_matrix
+    metrics_computer.pprint_conf_matrix(conf_matrix)
     
     if manager:
-       sum_metrics = {k: sum_metrics[k] for k in test_params["metrics"]}
-       manager.log_summary_metrics(sum_metrics)
-       manager.log_confusion_matrix(bin_conf_matrix)
-       manager.close()
-
-    if writer: writer.close()
+        manager.log_summary_metrics(sum_metrics)
+        if params["plot_conf_matrix"]:
+            manager.log_confusion_matrix(conf_matrix)
+        if params["plot_roc"]:
+            raise NotImplementedError()
+        if params["plot_pr"]:
+            raise NotImplementedError()
+        manager.close()
 
 
 
@@ -374,15 +299,9 @@ if __name__ == '__main__':
     parser.add_argument('--weights', '-w', type=str,
                         default='best.pt', 
                     help='Weights name for loading from this run')
-    parser.add_argument('--mlflow', action='store_true', 
-                        dest='use_mlflow', default=False, 
-                        help='whether to use MLFlow for experiment manager')
     parser.add_argument('--clearml', action='store_true', 
                         dest='use_clearml', default=False, 
                         help='whether to use ClearML for experiment manager')
-    parser.add_argument('--tensorboard', '-tb', action='store_true', 
-                        default=False, 
-                        help='whether to use Tensorboard')
     parser.add_argument('--log-step', '-ls', type=int, default=1, 
                         help='interval of log metrics')
     parser.add_argument('--comment', '-m', type=str, default=None, 
@@ -391,4 +310,4 @@ if __name__ == '__main__':
     # Namespace to dict
     args = vars(args)
 
-    main(**args)
+    test(**args)
