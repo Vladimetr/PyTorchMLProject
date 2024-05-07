@@ -50,81 +50,104 @@ class CrossEntropyLoss(Loss):
         return loss, loss_values
 
 
-def init_loss(name:str, params:dict, device='cpu') -> Loss:
-    if name == 'cross_entropy':
-        loss = CrossEntropyLoss(device=device, **params)
+def init_loss(loss_cfg:dict, device='cpu') -> Loss:
+    loss_cfg = dict(loss_cfg)  # copy
+    loss_class = loss_cfg.pop("class")
+    if loss_class == 'cross_entropy':
+        loss = CrossEntropyLoss(**loss_cfg, device=device)
         
     # another loss
     else:
-        raise ValueError(f"Invalid loss '{name}'")
+        raise ValueError(f"Invalid loss '{loss_class}'")
     return loss
 
 
+# all valid metrics
+METRICS = ["TP", "FN", "FP", "TN", 
+           "acc", "recall", "precision", 
+           "conf_matrix",
+]
+# metrics that are defined for particular class
+CLASS_METRICS = ["TP", "FN", "FP", "TN",
+                 "recall", "precision"
+                 ]
+CSV_SEP = ' '
 
-class BinClassificationMetrics:
-    def __init__(self, compute_metrics:list, logger=None,
-                 n_classes:int=2, pos_classes:List[int]=None,
-                 class_names:List[str]=None,
-                 epoch=False, step=False):
+
+class ClassificationMetrics:
+    def __init__(self, classes:List[str], metrics:List[str],
+                 logger=None, epoch=False, step=False,
+                 log_title=True):
         """
-        compute_metrics (list[str]): order of metrics to compute
-        n_classes (int): number of classes - C.
-            In case of more than 2, it will be converted to binary
-        pos_classes (list[int], None): list of indexes 
-            of positive classes. For converting multiclass 
-            to binary. If None, positive class is 1
-        class_names (list[str]): C-list of class names
-            If None, classes ['0', '1', ..., C-1]
+        classes (list[str]): C-list of class names
+        metrics (list[str]): order of metrics to compute
         epoch (bool): whether to log epoch
         step (bool): whether to log step
+        log_title (bool): whether log column names
         """
-        self.compute_metrics = compute_metrics
+        self.compute_metrics = metrics 
+
+        # Check given metrics are in valid list
+        for metric_name in metrics:
+            if not metric_name in METRICS:
+                raise ValueError(f"Invalid metric '{metric_name}'")
+
         # All of these metrics are computed based on conf matrix
         self.metrics_funcs = {
             "TP": self.tp,
             "FN": self.fn,
             "TN": self.tn,
             "FP": self.fp,
-            "Acc": self.accuracy,
-            "Recall": self.recall,  # TPR
-            "Precision": self.precison,
-
+            "acc": self.accuracy,
+            "recall": self.recall,  # TPR
+            "precision": self.precison,
         }
-        log_items = list(compute_metrics)
-        if step:
-            log_items = ['step'] + log_items
-        if epoch:
-            log_items = ['epoch'] + log_items
-        self.log_items = log_items
-        if logger:
-            # set title
-            logger.info(' '.join(log_items))
-        self.n_classes = n_classes
-        self.pos_classes = pos_classes or [1]
-        self.class_names = class_names or \
-                           [str(i) for i in range(n_classes)]
-        self.logger = logger
+
+        # define metrics logging format
+        self.classes = classes
+        self.n_classes = len(classes)
         self.epoch = epoch
         self.step = step
+        self.logger = logger
+        self._init_log_format(log_title=log_title)
         self.reset_summary()
 
-    def conf_matrix(self, pred:Tensor, targ:Tensor,
-                        precomputed:dict=None) -> Tensor:
+    def _init_log_format(self, log_title=True):
+        log_items = []
+        for metric_name in self.compute_metrics:
+            if metric_name in CLASS_METRICS:
+                log_items += [f"{metric_name}-{class_name}" 
+                              for class_name in self.classes]
+            else:
+                log_items.append(metric_name)
+                
+        if self.step:
+            log_items = ['step'] + log_items
+        if self.epoch:
+            log_items = ['epoch'] + log_items
+        self.log_items = log_items
+        if self.logger and log_title:
+            # log title
+            self.logger.info(CSV_SEP.join(log_items))
+
+    def conf_matrix(self, pred:Tensor, targ:Tensor) -> Tensor:
         """
         C - n_classes
-             0    2
-        0 |    |    |
-        2 |    |    |
+             0    2    3
+        0 |    |    |    |
+        2 |    |    |    |
+        3 |    |    |    |
         columns: actual
         rows: predicted
         Args:
-            pred (B, ): indexes of pred classes (pos=1)
-            targ (B, ): indexes of targ classes (pos=1)
+            pred (B, ): indexes of pred classes
+            targ (B, ): indexes of targ classes
         Returns:
             Tensor (C, C)
         """
         conf_matrix = torch.zeros(self.n_classes, self.n_classes,
                                   dtype=torch.int)
+
         for i in range(self.n_classes):
             for j in range(self.n_classes):
                 conf_matrix[i, j] = torch.sum(torch.logical_and(
@@ -132,180 +155,171 @@ class BinClassificationMetrics:
                 ))
         return conf_matrix
 
-    def bin_conf_matrix(self, pred:Tensor, targ:Tensor,
-                            precomputed:dict=None) -> Tensor:
-        """
-             0    1
-        0 | TN | FN |
-        1 | FP | TP |
-        columns: actual
-        rows: predicted
-        Args:
-            pred (B, ): indexes of pred classes (pos=1)
-            targ (B, ): indexes of targ classes (pos=1)
-        Returns:
-            Tensor (2, 2)
-        """
-        if not precomputed:
-            precomputed = dict()
-        tn = precomputed.get("TN", self.tn(pred, targ))
-        fn = precomputed.get("FN", self.fn(pred, targ))
-        fp = precomputed.get("FP", self.fp(pred, targ))
-        tp = precomputed.get("TP", self.tp(pred, targ))
-        conf_matrix = torch.tensor(
-            [[tn, fn],
-             [fp, tp]],
-            dtype=torch.int
-        )
-        return conf_matrix
-    
-    def conf_matrix_to_binary(self, conf_matrix:Tensor) -> Tensor:
-        """
-        Converting multiclass confusion matrix to binary matrix
-        according to positive classes
-        Args:
-            conf_matrix (tensor (C, C)): multiclass conf matrix
-        Returns:
-            tensor (2, 2): binary conf matrix
-        """
-        fn = fp = tp = 0
-        for i in range(self.n_classes):
-            for j in range(self.n_classes): 
-                if i in self.pos_classes and j in self.pos_classes:
-                    tp += conf_matrix[i, j]
-                if i in self.pos_classes and j not in self.pos_classes:
-                    fp += conf_matrix[i, j]
-                if i not in self.pos_classes and j in self.pos_classes:
-                    fn += conf_matrix[i, j]
-        tn = conf_matrix.sum().item() - tp - fn - fp
-        bin_conf_matrix = torch.tensor(
-            [[tn, fn],
-             [fp, tp]],
-            dtype=torch.int
-        )
-        return bin_conf_matrix
-
-    @staticmethod
-    def tp(pred:Tensor, targ:Tensor,
-           precomputed:dict=None) -> int:
+    def tp(self, class_indx:int,
+           pred:Tensor, targ:Tensor, 
+           conf_matrix:Tensor=None) -> int:
         """
         True positive
         Args:
-            pred (B, ): indexes of pred classes (pos=1)
-            targ (B, ): indexes of targ classes (pos=1)
-        Returns:
-            int: true positive
-        """
-        try:
-            conf_matrix = precomputed["bin_conf_matrix"]
-        except (TypeError, KeyError):
-            tp = torch.sum(torch.logical_and(pred == 1, targ == 1)).item()
-        else:
-            tp = conf_matrix[1, 1].item()
-        return tp
-    
-    @staticmethod
-    def tn(pred:Tensor, targ:Tensor,
-           precomputed:dict=None) -> int:
-        """
-        True negative
-        Args:
-            pred (B, ): indexes of pred classes (pos=1)
-            targ (B, ): indexes of targ classes (pos=1)
-        Returns:
-            int: true negative
-        """
-        try:
-            conf_matrix = precomputed["bin_conf_matrix"]
-        except (TypeError, KeyError):
-            tn = torch.sum(torch.logical_and(pred == 0, targ == 0)).item()
-        else:
-            tn = conf_matrix[0, 0].item()
-        return tn
-    
-    @staticmethod
-    def fp(pred:Tensor, targ:Tensor,
-           precomputed:dict=None) -> int:
-        """
-        False positive
-        Args:
-            pred (B, ): indexes of pred classes (pos=1)
-            targ (B, ): indexes of targ classes (pos=1)
+            class_index (int): for which class compute this metric
+            pred (B, ): pred classes 
+            targ (B, ): targ classes
+        NOTE: for conf matrix: rows - preds, colums - targs
         Returns:
             int: false positive
         """
-        try:
-            conf_matrix = precomputed["bin_conf_matrix"]
-        except (TypeError, KeyError):
-            fp = torch.sum(torch.logical_and(pred == 1, targ == 0)).item()
-        else:
-            fp = conf_matrix[1, 0].item()
-        return fp
+        if conf_matrix is None:
+            conf_matrix = self.conf_matrix(pred, targ)  # (C, C)
+        tp = conf_matrix[class_indx, class_indx].item()
+        return tp
     
     @staticmethod
-    def fn(pred:Tensor, targ:Tensor,
-           precomputed:dict=None) -> int:
+    def tn(class_indx:int,
+           pred:Tensor, targ:Tensor, 
+           conf_matrix:Tensor=None) -> int:
+        """
+        True negative
+        Args:
+            class_index (int): for which class compute this metric
+            pred (B, ): pred classes 
+            targ (B, ): targ classes
+        NOTE: for conf matrix: rows - preds, colums - targs
+        Returns:
+            int: true negative
+        """
+        raise NotImplementedError()
+    
+    def fp(self, class_indx:int,
+           pred:Tensor, targ:Tensor, 
+           conf_matrix:Tensor=None) -> int:
         """
         False positive
         Args:
-            pred (B, ): indexes of pred classes (pos=1)
-            targ (B, ): indexes of targ classes (pos=1)
+            class_index (int): for which class compute this metric
+            pred (B, ): pred classes 
+            targ (B, ): targ classes
+        NOTE: for conf matrix: rows - preds, colums - targs
+        Returns:
+            int: false positive
+        """
+        if conf_matrix is None:
+            conf_matrix = self.conf_matrix(pred, targ)  # (C, C)
+        
+        tp = conf_matrix[class_indx, class_indx].item()
+        pred_sum = conf_matrix[class_indx, :].sum().item()
+        fp = pred_sum - tp
+        return fp
+    
+    def fn(self, class_indx:int,
+           pred:Tensor, targ:Tensor, 
+           conf_matrix:Tensor=None) -> int:
+        """
+        False negative
+        Args:
+            class_index (int): for which class compute this metric
+            pred (B, ): pred classes 
+            targ (B, ): targ classes
+        NOTE: for conf matrix: rows - preds, colums - targs
         Returns:
             int: false negative
         """
-        try:
-            conf_matrix = precomputed["bin_conf_matrix"]
-        except (TypeError, KeyError):
-            fn = torch.sum(torch.logical_and(pred == 0, targ == 1)).item()
-        else:
-            fn = conf_matrix[0, 1].item()
+        if conf_matrix is None:
+            conf_matrix = self.conf_matrix(pred, targ)  # (C, C)
+        
+        tp = conf_matrix[class_indx, class_indx].item()
+        targ_sum = conf_matrix[:, class_indx].sum().item()
+        fn = targ_sum - tp
         return fn
     
-    def accuracy(self, pred:Tensor, targ:Tensor, 
-                 precomputed:dict=None) -> float:
-        """ (TP + TN) / Total """
-        try:
-            conf_matrix = precomputed["bin_conf_matrix"]
-        except (TypeError, KeyError):
-            conf_matrix = self.bin_conf_matrix(pred, targ)
-        tn = conf_matrix[0, 0].item()
-        tp = conf_matrix[1, 1].item()
-        s = conf_matrix.sum().item()
-        try:
-            acc = (tn + tp) / s
-        except ZeroDivisionError:
-            return -1
+    def accuracy(self, 
+                 pred:Tensor, targ:Tensor, 
+                 class_indx:int=None,
+                 conf_matrix:Tensor=None) -> float:
+        """ TP / Total 
+        Args:
+            class_index (int): for which class compute this metric
+                If None, compute total accuracy
+            pred (B, ): pred classes 
+            targ (B, ): targ classes
+        NOTE: for conf matrix: rows - preds, colums - targs
+        Returns:
+            float: false negative
+        """
+        if conf_matrix is None:
+            conf_matrix = self.conf_matrix(pred, targ)  # (C, C)
+
+        if class_indx is not None:
+            tp = conf_matrix[class_indx, class_indx]
+            targ_sum = conf_matrix[:, class_indx].sum().item()
+            pred_sum = conf_matrix[class_indx, :].sum().item()
+            acc = targ_sum + pred_sum - 2 * tp
+            return acc
+        
+        # total accuracy
+        tp = torch.diagonal(conf_matrix).sum().item()
+        total = conf_matrix.sum().item()
+        acc = tp / total
         return acc
     
-    def precison(self, pred:Tensor, targ:Tensor, 
-                 precomputed:dict=None) -> float:
-        """ TPR = TP / (TP + FP) """
-        try:
-            conf_matrix = precomputed["bin_conf_matrix"]
-        except (TypeError, KeyError):
-            conf_matrix = self.bin_conf_matrix(pred, targ)
-        tp = conf_matrix[1, 1].item()
-        fp = conf_matrix[1, 0].item()
+    def precison(self, class_indx:int,
+                 pred:Tensor, targ:Tensor, 
+                 conf_matrix:Tensor=None) -> float:
+        """ TPR = TP / (TP + FP) 
+        Args:
+            class_index (int): for which class compute this metric
+            pred (B, ): pred classes 
+            targ (B, ): targ classes
+        NOTE: for conf matrix: rows - preds, colums - targs
+        Returns:
+            float: precision
+        """
+        tp = self.tp(class_indx, pred, targ, conf_matrix)
+        fp = self.fp(class_indx, pred, targ, conf_matrix)
         try:
             prec = tp / (tp + fp)
         except ZeroDivisionError:
-            return -1
+            prec = -1
         return prec
     
-    def recall(self, pred:Tensor, targ:Tensor, 
-               precomputed:dict=None) -> float:
-        """ TPR = TP / (TP + FN) """
+    def recall(self, class_indx:int,
+               pred:Tensor, targ:Tensor, 
+               conf_matrix:Tensor=None) -> float:
+        """ TPR = TP / (TP + FN) 
+        Args:
+            class_index (int): for which class compute this metric
+            pred (B, ): pred classes 
+            targ (B, ): targ classes
+        NOTE: for conf matrix: rows - preds, colums - targs
+        Returns:
+            int: recall
+        """
+        tp = self.tp(class_indx, pred, targ, conf_matrix)
+        fn = self.fn(class_indx, pred, targ, conf_matrix)
         try:
-            conf_matrix = precomputed["bin_conf_matrix"]
-        except (TypeError, KeyError):
-            conf_matrix = self.bin_conf_matrix(pred, targ)
-        tp = conf_matrix[1, 1].item()
-        fn = conf_matrix[0, 1].item()
-        try:
-            rec = tp / (tp + fn)
+            recall = tp / (tp + fn)
         except ZeroDivisionError:
-            return -1
-        return rec
+            recall = -1
+        return recall
+    
+    def from_conf_matrix(self, metrics:List[str], conf_matrix:Tensor
+                         ) -> dict:
+        """ Extract given metrics from confusion matrix
+        """
+        result = OrderedDict()
+        for metric_name in metrics:
+            if metric_name in CLASS_METRICS:
+                for class_i, class_name in enumerate(self.classes):
+                    func = self.metrics_funcs[metric_name]
+                    name = f"{metric_name}-{class_name}"
+                    result[name] = func(pred=None, targ=None,
+                                        class_indx=class_i,
+                                        conf_matrix=conf_matrix)
+            else:
+                func = self.metrics_funcs[metric_name]
+                result[metric_name] = func(pred=None, targ=None,
+                                           conf_matrix=conf_matrix)
+        return result
+
 
     def compute(self, probs:Tensor, targ:Tensor,
                 accumulate=False) -> dict:
@@ -318,85 +332,55 @@ class BinClassificationMetrics:
         Returns:
             dict: dict with metrics
         """
-
         if probs.shape[0] != targ.shape[0]:
             raise ValueError("Mismatch probs and targ shapes")
         if probs.shape[1] != self.n_classes:
             raise ValueError(f"Invalid number of classes {probs.shape[1]}")
-        # class indexes with max prob
+        # class indexes with max prob (don't use threshold here)
         pred = torch.max(probs, dim=1)[1]  # (B, )
         
-        metrics = metrics = OrderedDict()
-        if self.n_classes > 2:
-            conf_matrix = self.conf_matrix(pred=pred, targ=targ)
-            metrics["conf_matrix"] = conf_matrix
-            bin_conf_matrix = self.conf_matrix_to_binary(conf_matrix)
-        else:
-            bin_conf_matrix = self.conf_matrix(pred, targ)
-        
-        metrics["bin_conf_matrix"] = bin_conf_matrix
-        for name in self.compute_metrics:
-            try:
-                func = self.metrics_funcs[name]
-                metrics[name] = func(pred=None, targ=None,
-                                     precomputed=metrics)
-            except KeyError:
-                continue
+        # Confusion matrix is core of following metrics
+        metrics = list(self.compute_metrics)  # copy
+        conf_matrix = self.conf_matrix(pred=pred, targ=targ)
+        if "conf_matrix" in metrics:
+            result["conf_matrix"] = conf_matrix
+            metrics.remove("conf_matrix")
+
+        result = self.from_conf_matrix(metrics, conf_matrix)
 
         if accumulate:
-            self.sum_bin_conf_matrix += metrics["bin_conf_matrix"]
-            if self.n_classes > 2:
-                self.sum_conf_matrix += metrics["conf_matrix"]
-        # metrics.pop("conf_matrix")
-        return metrics
+            # accumulating confusion matrix is enough
+            self.sum_conf_matrix += conf_matrix
+        return result
     
-    def add_summary(self, metrics:dict):
+    def summary(self, metrics:List[str]) -> dict:
+        """ Get summary of accumulated metrics 
         """
-        Add custom metrics (that are out of conf matrix)
-        to summary metrics
-        """
-        for k, v in metrics.items():
-            try:
-                self.sum_metrics[k].append(v)
-            except KeyError:
-                self.sum_metrics[k] = [v]  # new value in list
+        result = OrderedDict()
+        metrics = list(metrics)  # copy
+        if "conf_matrix" in metrics:
+            result["conf_matrix"] = self.sum_conf_matrix
+            metrics.remove("conf_matrix")
 
-    def summary(self) -> dict:
-        """ Get summary of accumulated metrics """
-        metrics = OrderedDict({
-            "bin_conf_matrix": self.sum_bin_conf_matrix,
-            "conf_matrix": self.sum_conf_matrix,
-        })
-        for name in self.compute_metrics:
-            try:
-                func = self.metrics_funcs[name]
-                metrics[name] = func(pred=None, targ=None,
-                                     precomputed=metrics)
-            except KeyError:
-                continue 
-        # additional metrics (out of conf matrix)
-        for k, v in self.sum_metrics.items():
-            metrics[k] = sum(v) / len(v)
-        return metrics
+        result.update(self.from_conf_matrix(metrics,
+                                            self.sum_conf_matrix))
+        return result
     
     def reset_summary(self):
-        self.sum_conf_matrix = torch.zeros(self.n_classes, self.n_classes,
+        self.sum_conf_matrix = torch.zeros(self.n_classes, 
+                                           self.n_classes,
                                            dtype=torch.int)
-        self.sum_bin_conf_matrix = torch.zeros(2, 2,
-                                           dtype=torch.int)
-        # additional metrics (out of conf matrix)
-        self.sum_metrics = dict()  # {'name': list[values]}
 
     def log_metrics(self, metrics:dict, epoch:int=None, step:int=None):
         items = dict(metrics)
-        if epoch:
+        if epoch and 'epoch' in self.log_items:
             items['epoch'] = epoch
-        if step:
+        if step and 'step' in self.log_items:
             items['step'] = step
 
         if self.logger:
             # log to file in .csv format
-            log_line = ' '.join(str(items[col]) for col in self.log_items)
+            log_line = CSV_SEP.join(str(items[col]) for col in self.log_items)
             self.logger.info(log_line)
         else:
             # print to stdout
@@ -412,35 +396,60 @@ class BinClassificationMetrics:
             log_line = ' | '.join(log_items)
             print(log_line)
 
-    def pprint(self, metrics:dict, line=True):
+    def pprint(self, metrics:dict, line=True, 
+               with_conf_matrix:bool=False):
         msg = []
+        metrics = dict(metrics)  # copy
+        conf_matrix = metrics.pop("conf_matrix", None)
         for k, v in metrics.items():
             if isinstance(v, float):
                 v = '{:.2f}'.format(v)
             msg.append(f"{k}={v}")
         if line:
-            return " | ".join(msg)
-        return "\n".join(msg)
+            print(" | ".join(msg))
+        print("\n".join(msg))
+        if with_conf_matrix and conf_matrix is not None:
+            self.pprint_conf_matrix(conf_matrix)
 
-    def print_conf_matrix(self, conf_matrix:Tensor):
-        n_classes = conf_matrix.shape[0]
-        if n_classes > 2:
-            print("...print conf matrix...")
-        else:
-            print("...print bin conf matrix...")
+    def pprint_conf_matrix(self, conf_matrix:Tensor):
+        max_class_name = max([len(cls_name) for cls_name in self.classes])
+        cell_size = max_class_name + 2  #  "-dog-"
+        row_title = ' ' * cell_size + '|'
+        for class_name in self.classes:
+            row_title += ("{:^" + str(cell_size) + "}|")\
+                         .format(class_name)
+            
+        out_str = row_title
+        for j in range(self.n_classes):
+            row = ("{:^" + str(cell_size) + "}|")\
+                  .format(self.classes[j])
+            for i in range(self.n_classes):
+                row += ("{:^" + str(cell_size) + "}|")\
+                         .format(conf_matrix[j, i])
+            out_str += "\n" + row
+
+        print(out_str)
+
 
 
 if __name__ == '__main__':
-    metrics_computer = BinClassificationMetrics(
-        compute_metrics=["Acc", "Precision", "Recall"],
+    metrics_computer = ClassificationMetrics(
+        metrics=["acc", "precision", "recall"],
+        classes=["cat", "dog", "bear"],
+        epoch=True, step=True,
     )
     probs = torch.tensor(
-        [[.1, .4, .7, .9, .2, 0, .2],
-         [.9, .6, .3, .1, .8, 1, .8]]
+        [[.1, .4, .7, .5, .2, 0, .2],
+         [.8, .3, .1, .1, .2, 1, .3],
+         [.1, .3, .2, .4, .6, 0, .5]]
     ).transpose(0, 1)
-    targ = torch.tensor(
-        [[0, 1, 1, 1, 1, 1, 0],
-         [1, 0, 0, 0, 0, 0, 1]]
-    ).transpose(0, 1)
-    metrics = metrics_computer.compute(probs, targ)
-    print(metrics)
+    targ = torch.tensor([0, 2, 1, 2, 1, 1, 0])
+
+    metrics = metrics_computer.compute(probs, targ, accumulate=True)
+    metrics_computer.log_metrics(metrics, epoch=1, step=1)
+    metrics_computer.log_metrics(metrics, epoch=1, step=2)
+    metrics_computer.log_metrics(metrics, epoch=1, step=3)
+
+    sum_metrics = metrics_computer.summary(["acc", "precision", "recall", "conf_matrix"])
+    print(metrics_computer.pretty(sum_metrics))
+    metrics_computer.pprint_conf_matrix(sum_metrics["conf_matrix"])

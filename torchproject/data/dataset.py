@@ -1,67 +1,64 @@
 """
 Data batching for train and test
 """
+from typing import Union, List, Tuple
 import numpy as np
 import pandas as pd
 import random
 import sys
+from collections import OrderedDict
 import torch
+from torch import Tensor
 from torch.utils.data import Dataset
 from torch.utils.data import DataLoader
 from torch.utils.data.sampler import Sampler
-import torch.nn.functional as F
-from ..preprocess import AudioPreprocess
+from ..preprocess import init_preprocessor
 from .. import utils
+
+CSV_SEP = ','
 
 
 class CudaDataLoader(DataLoader):
-    # принимает экземпляр класса Dataset и Sampler
-
     def __init__(self, gpu_id:int=0, *args, **kwargs):
         self.gpu_id = gpu_id
-        super().__init__(*args, **kwargs)       # вызывает метод __init__
-                                                # родительского класса
+        super().__init__(*args, **kwargs)
 
     def __iter__(self):
-        # перенести батч с ЦПУ на ГПУ
+        """
+        Relocate data from CPU to GPU
+        """
         for cpu in super().__iter__():
-            # cpu - list of tensors on CPU
-
-            gpu = []  # list of tensors on GPU
+            gpu = []
             for values in cpu:
-                # перед отправкой на ГПУ, надо преобразовать в contiguous()
-                # if pin_memory==True -> non_blocking=True
-                if isinstance(values, torch.Tensor):
+                if isinstance(values, Tensor):
                     gpu.append(values.contiguous().cuda(
                         self.gpu_id, non_blocking=True))
                 else:
                     gpu.append(values)
-
             yield gpu
 
     def shuffle(self, epoch):
-        # перемешать батчи между собой (каждую эпоху)
+        """ Shuffle batches (every epoch)
+        """
         self.batch_sampler.shuffle(epoch)
 
-    def __len__(self):
-        # кол-во батчей
+    def __len__(self) -> int:
+        """ Number of batches
+        """
         return len(self.batch_sampler)
 
 
 class BucketingSampler(Sampler):
     """
-    организует индексы
-    при batch_sz = 3
+    Organize batch indices
+    For batch_sz = 3
     [ [1, 2, 3], [4, 5, 6], [7, 8, 9], ... ]
-    затем перемешиваются
-    1) батчи между собой
-    2) образцы внутри батча
-    * также можно поставить ограничение на кол-во
+    Then 
+    1) batches are shuffled among each other
+    2) samples are shuffled inside each batch
     """
-    def __init__(self, dataset, batch_size, limit=sys.maxsize, shuffle=True):
-        """
-        :papam data: экземпляр класса Dataset
-        """
+    def __init__(self, dataset, batch_size, 
+                 limit=sys.maxsize, shuffle=True):
         super().__init__(dataset)
         index = list(range(len(dataset)))  # [0, 1, 2, 3, ... n]
         if shuffle:
@@ -78,63 +75,96 @@ class BucketingSampler(Sampler):
         # выдать индексы батчей
         for batch in self.bins[:self.limit]:
             if self.do_shuffle:
-                random.shuffle(batch)       # перемешать образцы внутри батча
+                random.shuffle(batch)  # shuffle samples inside batch
             yield batch
 
-    def __len__(self):
-        # кол-во батчей
+    def __len__(self) -> int:
+        """ Number of batched
+        """
         return len(self.bins[:self.limit])
 
     def shuffle(self, epoch):
-        # перемешать батчи между собой (каждую эпоху)
+        """ Shuffle batches (every epoch)
+        """
         if self.do_shuffle:
             np.random.RandomState(epoch).shuffle(self.bins)
 
 
-class AudioDataset(Dataset):
-    def __init__(self, data_path:str, n_classes:int, preprocess_params:dict):
+class BlockChainDataset(Dataset):
+    def __init__(self, data_path:str, classes:List[str]):
         """
         config (dict): see config.yaml for example
         """
         self.data_path = data_path
-        preprocess_params = dict(preprocess_params)
-        self.frame = preprocess_params.pop("frame")
-        self.preprocess = AudioPreprocess(**preprocess_params)
-        self.data = pd.read_csv(data_path, sep=' ')
-        self.n_classes = n_classes
+        print(f"Loading manifest '{data_path}'...")
+        df = pd.read_csv(data_path, sep=CSV_SEP)
+        self.data = df.to_dict(into=OrderedDict, orient='index')
+        self.features_names = list(df.columns)
+        self.features_names.remove("label")
+        self.classes = classes
+        self.n_classes = len(classes)
+        self.df = df
 
-    def __len__(self):
-        # размер всего датасета
-        # полное кол-во всех образцов
+    def get_features_names(self) -> List[str]:
+        return self.features_names
+
+    def get_data(self, device:str="cpu", shuffle=False
+                 ) -> Tuple[Tensor, Tensor]:
+        """
+        NOTE: out-of-memory may appear
+        """
+        df = self.df
+        if shuffle:
+            df = df.sample(frac=1)
+
+        print("Data extraction ...")
+        xs = []  # [(F, )]
+        for feature_name in self.features_names:
+            feature = df[feature_name].tolist()
+            xs.append(torch.tensor(feature))  
+        xs = torch.stack(xs, dim=1).to(device)  # (M, F)
+        xs = xs
+
+        labels = df["label"].tolist()
+        ys = []
+        for label in labels:
+            try:
+                y = self.classes.index(label)
+            except ValueError:
+                raise ValueError(f"Invalid label name '{label}'")
+            ys.append(y)
+        ys = torch.tensor(ys).to(device)
+        return xs, ys
+
+    def __len__(self) -> int:
+        """
+        Data size
+        """
         return len(self.data)
 
     def __getitem__(self, i):
         """
-        подгружаем из диска
-        i-ый образец
-        из всего датасета,
-        делаем препроцесс
-        и
-        отправляем в виде
-        -- 1 образец --
-        x_data, y_data
+        load i-th data sample  образец
+        apply given preprocess
+        Returns:
+            tuple
+              (F, ): feature vector
+              int: label
         """
-        npy_path, shape, start, end, label = self.data.iloc[i]
-        # load npy
-        sample = np.memmap(npy_path, dtype='float32',
-                           mode='r', shape=(shape, ))
-        sample = torch.tensor(sample).view(1, -1)
-        sample = sample[:, start:end]
+        features : dict = self.data[i]
+        label : str = features.pop("label")
+        assert list(features.keys()) == self.features_names
+        
+        # features must be preprocessed beforehand
+        x = torch.tensor(list(features.values()))
 
-        # features extraction
-        features = self.preprocess.extract_features(sample)
-        # (F, T)
-        framed_features = self.preprocess.features_extractor.split(
-                                features=features, chunk=self.frame
-        )
-        # (N, F, T)
+        # label (str) -> (int)
+        try:
+            label = self.classes.index(label)
+        except ValueError:
+            raise ValueError(f"Invalid label name '{label}'")
 
-        return framed_features, int(label)
+        return x, label
     
     def get_model_input(self, batch_size=1) -> dict:
         """
@@ -147,21 +177,22 @@ class AudioDataset(Dataset):
         xs, _ = self.collate([batch_item] * batch_size)
         return {'x': xs}
     
-    def collate(self, batch):
+    def collate(self, batch:List[tuple]):
         """
-        get torch data Tensors from batch list
-        :param batch: list of (x, target)
-                    as from __getitem__
-        :return: x - torch Tensor
-                y - torch Tensor
+        Get data tensors from batch list
+        Args:
+            batch (list[Tensor, int])
+        Returns:
+            (B, F): batch of inputs
+            (B, ): batch of labels
         """
         xs, ys = [], []
         for x, y in batch:
             xs.append(x)
             ys.append(y)
-
-        xs = torch.cat(xs, dim=0)
-        ys = torch.tensor(ys, dtype=torch.long)
+            
+        xs = torch.stack(xs, dim=0)  # (B, F)
+        ys = torch.tensor(ys, dtype=torch.long)  # (B)
         return xs, ys
 
 
@@ -169,10 +200,10 @@ class AudioDataset(Dataset):
 if __name__ == '__main__':
     config = utils.config_from_yaml('config.yaml')
     preprocess_params = config["preprocess"]
-    data_path = 'data/processed/train_manifest.v1.csv'
+    data_path = 'data/processed/test.v1.csv'
 
-    dataset = AudioDataset(data_path, n_classes=2, 
-                           preprocess_params=preprocess_params)
+    dataset = BlockChainDataset(data_path, classes=config["classes"], 
+                                preprocess_params=preprocess_params)
     sampler = BucketingSampler(dataset, batch_size=2, shuffle=True)
     dataset = CudaDataLoader(dataset=dataset, 
                           collate_fn=dataset.collate, 
