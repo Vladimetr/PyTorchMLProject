@@ -7,9 +7,8 @@ All neccessary info is stored in dir and manager:
 - meta.yaml;
 - train.csv;    *# step metrics on train data*
 - test.csv;     *# step metrics on test data*
-- features.txt  *# list of features name in given order. That is how model was trained*
 
-See example in `dev/experiments/my_experiment/train/001/` </br>
+See example in `dev/experiments/experiment/train/001/` </br>
 
 > Files above allow to reproduce train experiment, e.g. re-run it on new data
 
@@ -43,11 +42,17 @@ Parametres
 <code> --log-step 5 </code> </br>
 *how often to log step metrics*
 
+<code> --resume 32 </code> </br>
+*train experiment run to resume training from last epoch (within given experiment)*
+
+<code> --cache-size 1000 </code> </br>
+*how much audio samples to store in RAM for faster batch generation*
+
 How to
 -------------
 
 * #### Add metrics </br>
-*Add metrics to `config:train:metrics` list according to valid list in `blockchain_ml/metrics.py`*
+*Add metrics to `config:train:metrics` list according to valid list in `torchproject/metrics.py`*
 ```python
 METRICS = ["TP", "FN", "FP", "TN", 
            "acc", "recall", "precision", 
@@ -56,7 +61,7 @@ METRICS = ["TP", "FN", "FP", "TN",
 ```
 
 * #### Add optimizer </br>
-*For iterative models it's able to define another PyTorch optimizer.* 
+*It's able to define another PyTorch optimizer.* 
 ```python
 # Define optimizer
 opt = train_params["opt"]
@@ -71,7 +76,7 @@ else:
 *And set new name in `config:train:optimizer`*
 
 * #### Add loss function </br>
-*For iterative models it's able to define another torch loss fucntion in `blockchain_ml/metrics.py`.*
+*It's able to define another torch loss fucntion in `torchproject/metrics.py`.*
 ```python
 class Loss(metaclass=ABCMeta):
     """ Abstract Loss """
@@ -117,15 +122,28 @@ class CrossEntropyLoss(Loss):
         }
         return loss, loss_values
 
-def init_loss(loss_cfg:dict, device='cpu') -> Loss:
+def init_loss(loss_cfg:dict,
+              device:str="cpu"
+              ) -> Loss:
+    """
+    loss_cfg (dict): 
+        {
+            "{class_name}": kwargs (dict)
+        }
+    """
     loss_cfg = dict(loss_cfg)  # copy
-    loss_class = loss_cfg.pop("class")
-    if loss_class == 'cross_entropy':
-        loss = CrossEntropyLoss(**loss_cfg, device=device)
-        
-    # another loss
-    else:
-        raise ValueError(f"Invalid loss '{loss_class}'")
+    name = next(iter(loss_cfg))
+    params = loss_cfg[name]
+    try:
+        # define class
+        loss = globals()[name]
+    except KeyError:
+        raise ValueError(f"Invalid loss name '{name}'")
+    try:
+        # init
+        loss = loss(**params, device=device)
+    except TypeError:
+        raise ValueError(f"Invalid loss params {params}")
     return loss
 ```
 *And set new name in `config:train:loss`*

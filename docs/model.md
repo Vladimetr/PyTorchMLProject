@@ -1,85 +1,69 @@
 MODEL
 ===========
 
-Each model can be represented as following `blockchain_ml/models/abstract.py`:
+Each model can be represented as following `torchproject/models/base.py`:
 ```python
-class MLModel(metaclass=ABCMeta):
-    @abstractmethod
-    def __init__(self, fdim:int, n_classes:int,
-                 training:bool=False):
-        """
-        Required params for all models
-        fdim (int): number of features for classification 
-                   (feature vector size)
-        n_classes (int): number of classified classes
-        training (bool): mode of model
-        """
-        pass
-    
-    def train_mode(self):
-        pass
-
-    def eval_mode(self):
-        pass
+class BaseModel(torch.nn.Module,
+                metaclass=ABCMeta):
+    def __init__(self, 
+                 n_classes:int=2,
+                 preprocess_cfg:dict=None,
+                 device:str="cpu",
+                 ):
+        super(BaseModel, self).__init__()
+        self.n_classes = n_classes
+        # ...
 
     @abstractmethod
-    def to_device(self, device:str):
-        """ Batch will be on GPU """
-        pass
-
-    @abstractmethod
-    def predict(self, x:Tensor):
+    def forward(self, x:Tensor) -> Tuple[Tensor, Tensor]:
         """
         B - batch size
+        F - feature dim
+        T - time dim
+        C - n classes
+        Args:
+            features (B, F, T): input features (already preprocessed)
+            or
+            samples (B, 1, S): raw samples (preprocess required)
+        Returns:
+            tuple
+              (B, C): output logits
+              (B, C): output probs (output of softmax)
         """
         pass
 
-    @abstractmethod
-    def save(self, weights_path:str):
-        pass
+    def load(self, weights_path:str) -> None:
+        state_dict = torch.load(weights_path)
+        self.load_state_dict(state_dict)
 
-    @abstractmethod
-    def load(self, weights_path:str):
-        pass
+    def save(self, weights_path: str):
+        torch.save(self.state_dict(), weights_path)
 ```
 
-There were 2 types of models under this project: 
-
-- #### IterativeModel
-*This PyTorch model is trained iteratively using batches, loss function, gradients calculation and backprop with multiple epochs.*
-
-```python
-class IterativeModel(MLModel):
-    def __init__(self):
-        pass
-
-    def train_step()
-        pass
-```
-
-- #### NonIterativeModel
-*This model is trained on whole dataset at once. Like random forests or linear regression. It's like fit/predict approach.*
-
-```python
-class NonIterativeModel(MLModel):
-    def __init__(self):
-        pass
-```
-
-How to define new model
+### How to define new model
 -----------
-1. In order to add new model create new class by inheriting from either `IterativeModel` or `NonIterativeModel`. Dont't forget to define required methods according to described API. 
-2. Add initialization to `blockchain_ml/models/__init__.py`
+1. In order to add new model create new class by inheriting from `BaseModel`. Dont't forget to define required methods according to described API. 
+2. Add initialization to `torchproject/models/__init__.py`
 ```python
-if model_class == 'random_forest':
-    from .classic import RandomForest
-    model = RandomForest(**model_cfg)
-elif model_class == 'dummy':
-    from .abstract import DummyModel
-    model = DummyModel(**model_cfg)
+preprocess_cfg = model_cfg.pop("preprocess", None)
+name = next(iter(model_cfg))
+params = model_cfg[name]
 
-# your new model
-else:
-    raise ValueError(f"Invalid model '{model_class}'")
+try:
+    # define class
+    model: BaseModel = globals()[name]
+except KeyError:
+    raise ValueError(f"Invalid model name '{name}'")
+try:
+    # init
+    model = model(preprocess_cfg=preprocess_cfg,
+                    training=training,
+                    device=device,
+                    **params)
+except TypeError:
+    raise ValueError(f"Invalid model params {params}")
+
+if weights:
+    model.load(weights)
 ```
 3. Set new model in `config.yaml` with **class** and **parametres**

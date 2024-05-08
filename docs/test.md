@@ -45,12 +45,15 @@ Parametres
 <code> --log-step 5 </code> </br>
 *how often to log step metrics*
 
+<code> --cache-size 1000 </code> </br>
+*how much audio samples to store in RAM for faster batch generation*
+
 
 How to
 -------------
 
 * #### Add step metrics </br>
-*Add metrics which calculated for each test batch to `config:test:step_metrics` list according to valid list in `blockchain_ml/metrics.py`*
+*Add metrics which calculated for each test batch to `config:test:step_metrics` list according to valid list in `torchproject/metrics.py`*
 ```python
 METRICS = ["TP", "FN", "FP", "TN", 
            "acc", "recall", "precision", 
@@ -59,7 +62,7 @@ METRICS = ["TP", "FN", "FP", "TN",
 ```
 
 * #### Add summary metrics </br>
-*Add metrics which calculated for whole test set to `config:test:sum_metrics` list according to valid list in `blockchain_ml/metrics.py`*
+*Add metrics which calculated for whole test set to `config:test:sum_metrics` list according to valid list in `torchproject/metrics.py`*
 ```python
 METRICS = ["TP", "FN", "FP", "TN", 
            "acc", "recall", "precision", 

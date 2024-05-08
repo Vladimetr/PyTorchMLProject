@@ -18,7 +18,6 @@ def init_model(model_cfg:Union[dict, None],
                 **kwargs
         }
     """
-    model_cfg = dict(model_cfg)  # copy
     preprocess_cfg = model_cfg.pop("preprocess", None)
     name = next(iter(model_cfg))
     params = model_cfg[name]

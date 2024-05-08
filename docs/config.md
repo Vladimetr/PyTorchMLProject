@@ -1,30 +1,35 @@
 Config
 =========
-`config.yaml` is main config file that defines whole project. There separate blocks for setting train, test, model configuration.
+`config.yaml` is main config file that defines whole project. There are separate blocks for setting train, test, model configuration.
 
 ```yaml
 classes:
-  - mixer
-  - game
-  - user
+  - real
+  - fake
 ```
 *What classes are used for classificator. Labels in data must be from this list*
 
 ## model
 ```yaml
 model:
-  class: random_forest
-  max_depth: 3
+  preprocess: dict or null
+  <ClassModelName>:
+    n_classes: int
+    kwarg1: value
+    kwarg2: value
 ```
-- **class** - *class (type) of model. According this class specific model is initialized in `blockchain_ml/models/__init__.py`*
+- **preprocess** - dict (or null) with preprocess params. If defined preprocess will be inside nn.Module (on GPU)
+- **class** - *class (type) of model. According this class specific model is initialized in `torchproject/models/__init__.py`*
 - **kwargs** - *This parameters are used in `__init__` for exactly this model*
 
 ## preprocess
 ```yaml
-preprocess: null
+preprocess: dict or null
     # not used yet
 ```
-*What algorithm is used to convert input data to tensor during **inference***
+*What algorithm is used to convert input data to tensor as model input. If not defined, preprocess before model is not used*
+
+>NOTE: use either preprocess inside model (may be on GPU) or before model (only on CPU)
 
 ## train
 ```yaml
@@ -36,15 +41,15 @@ metrics:
 pretrained: null
 # only for iterative training
 loss:
-  class: cross_entropy
+  <ClassLossName>: dict
 opt: Adam
 learning_rate: 0.001
 weight_decay: 0.005
 grad_norm: 1.0
 ```
-- **metrics** - *list of metrics to compute during train iterations. See available metrics in `blockchain_ml/metrics.py:METRICS`*
+- **metrics** - *list of metrics to compute during train iterations. See available metrics in `torchproject/metrics.py:METRICS`*
 - **pretrained** - *path to model weights as pretrained*
-- **loss** - *loss (with class and kwargs) for iterative training. See `blockchain_ml/metrics.py:init_loss`*
+- **loss** - *loss (with class and kwargs). See `torchproject/metrics.py:init_loss`*
 - **opt** - *Name of oprimizer for iterative training*
 - **learning_rate**
 - **weight_decay** - *Value for weight regularization*
@@ -69,8 +74,8 @@ test:
   plot_pr: False   # Precision-Recall curve
   plot_roc: False  # ROC curve
 ```
-- **step_metrics** - *list of metrics to compute during test iterations. See available metrics in `blockchain_ml/metrics.py:METRICS`*
-- **sum_metrics** - *list of metrics to compute for whole test set. See available metrics in `blockchain_ml/metrics.py:METRICS`*
+- **step_metrics** - *list of metrics to compute during test iterations. See available metrics in `torchproject/metrics.py:METRICS`*
+- **sum_metrics** - *list of metrics to compute for whole test set. See available metrics in `torchproject/metrics.py:METRICS`*
 - **plot_conf_matrix** - *whether to plot summary confusion in ClearML manager*
 - **plot_pr** - *whether to plot summary Precision-Recall curve in ClearML manager*
 - **plot_roc** - *whether to plot summary ROC curve in ClearML manager*
