@@ -53,9 +53,10 @@ class BucketingSampler(Sampler):
     Organize batch indices
     For batch_sz = 3
     [ [1, 2, 3], [4, 5, 6], [7, 8, 9], ... ]
-    Then 
+    If shuffle:
     1) batches are shuffled among each other
     2) samples are shuffled inside each batch
+    [ [8, 1, 4], [5, 2, 9], [3, 6, 7], ... ]
     """
     def __init__(self, dataset, batch_size, 
                  limit=sys.maxsize, shuffle=True):
@@ -79,7 +80,7 @@ class BucketingSampler(Sampler):
             yield batch
 
     def __len__(self) -> int:
-        """ Number of batched
+        """ Number of batches
         """
         return len(self.bins[:self.limit])
 
