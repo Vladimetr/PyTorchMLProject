@@ -1,7 +1,7 @@
 #!/bin/bash
 
-docker run -it --rm \
-    --name dev-antispoof-container \
+docker run -d \
+    --name train-antispoof \
     --network="host" \
     -v /mnt:/mnt \
     -v $PWD/../:/app/ \
@@ -9,4 +9,7 @@ docker run -it --rm \
     --user $(id -u):$(id -g) \
     --gpus "device=8" \
     audio-image:latest \
-    /bin/bash
+    python3 -m torchproject.train \
+        --epochs 15 \
+        --clearml
+        
