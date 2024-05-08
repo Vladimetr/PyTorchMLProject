@@ -94,10 +94,15 @@ class AntispoofDataset(Dataset):
     def __init__(self, data_path:str, classes:List[str], 
                  sr:int=8000,
                  preprocess_cfg:dict=None,
+                 cache_size:int=0
                  ):
         """
         data_path (str): /path/to/manifest.csv
-        |--audio--|--start--|--end--|--class--|
+            |--audio--|--start--|--end--|--class--|
+        preprocess_cfg (dict, None): if None, source samples
+            are stored in batch (B, 1, S)
+        cache_size (int): number of audio samples stored in RAM
+            for faster batch generating
         """
         self.data_path = data_path
         print(f"Loading manifest '{data_path}'...")
@@ -113,6 +118,8 @@ class AntispoofDataset(Dataset):
 
         self.data = data
         self.sr = sr
+        self.cache_samples = dict()  # {"audio_path": sample (1, S)}
+        self.cache_size = cache_size
 
     def __len__(self) -> int:
         """
@@ -131,8 +138,15 @@ class AntispoofDataset(Dataset):
         """
         audio_path, start, end, class_name = self.data.iloc[i]
 
-        # load audio
-        sample, _ = load_audio(audio_path)
+        # try load audio from cache first
+        try:
+            sample = self.cache_samples[audio_path]
+        except KeyError:
+            sample, _ = load_audio(audio_path)
+            # put in cache
+            if len(self.cache_samples) > self.cache_size:
+                self.cache_samples.clear()
+            self.cache_samples[audio_path] = sample
         # (1, S)
 
         # cut
@@ -148,7 +162,7 @@ class AntispoofDataset(Dataset):
             label = self.classes.index(class_name)
         except ValueError:
             raise ValueError(f"Invalid label name '{class_name}'")
-
+        
         return x, label
     
     def get_model_input(self, batch_size=1) -> dict:

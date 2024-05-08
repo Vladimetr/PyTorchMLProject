@@ -110,6 +110,7 @@ def test(data:str,
          data_shuffle:bool=True,
          log_step:int=1,
          comment:str=None,
+         cache_size:int=1000,
     ):
     """
     data(str): path/to/data
@@ -127,6 +128,8 @@ def test(data:str,
     data_shuffle (bool): whether to shuffle data
     log_step (int): interval of loggoing step metrics
     comment (str): postfix for experiment run name
+    cache_size (int): how much audio samples to store in RAM 
+        for faster batch generation
     """
     experiment = experiment.lower().replace(' ', '_')
     logger, run_dir, manager = None, None, None
@@ -207,7 +210,7 @@ def test(data:str,
 
     # Load test data
     test_set = AntispoofDataset(data, classes=classes,
-                                sr=sr, 
+                                sr=sr, cache_size=cache_size,
                                 preprocess_cfg=config["preprocess"])
     data_size = len(test_set)
     sampler = BucketingSampler(test_set, batch_size, shuffle=data_shuffle)
@@ -303,6 +306,10 @@ if __name__ == '__main__':
     parser.add_argument('--batch_size', '-bs', type=int, default=20)
     parser.add_argument('--gpu', type=int, dest="gpu_id", default=0,
                         help='which GPU to use')
+    parser.add_argument('--cache-size', '-cs', type=int, 
+                        default=1000,
+                        help="how much audio samples to store in RAM"\
+                             "for faster batch generation")
     parser.add_argument('--no-save', '-ns', action='store_true', 
                         default=False, 
                         help='no save results')

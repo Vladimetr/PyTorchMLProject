@@ -120,6 +120,7 @@ def train(train_data:str,
          config:Union[str, dict]='config.yaml',
          epochs:int=15,
          batch_size:int=500,
+         cache_size:int=1000,
          gpu_id:int=0,
          experiment:str='experiment',
          resume:int=None,
@@ -140,6 +141,8 @@ def train(train_data:str,
         It's also able to define new data
     clearml (bool): whether to manage experiment with ClearML
     data_shuffle (bool): whether to shuffle data
+    cache_size (int): how much audio samples to store in RAM 
+        for faster batch generation
     log_step (int): interval of loggoing step metrics
     comment (str): postfix for experiment run name
     """
@@ -236,7 +239,8 @@ def train(train_data:str,
     # Load train data
     preprocess_cfg = config["preprocess"]  # outside model
     train_set = AntispoofDataset(train_data, classes=classes,
-                                 sr=sr, preprocess_cfg=preprocess_cfg)
+                                 sr=sr, cache_size=cache_size,
+                                 preprocess_cfg=preprocess_cfg)
     train_data_size = len(train_set)
     sampler = BucketingSampler(train_set, batch_size,
                                shuffle=data_shuffle)
@@ -258,7 +262,8 @@ def train(train_data:str,
 
     # Load test data
     test_set = AntispoofDataset(test_data, classes=classes,
-                                sr=sr, preprocess_cfg=preprocess_cfg)
+                                sr=sr, cache_size=cache_size,
+                                preprocess_cfg=preprocess_cfg)
     test_data_size = len(test_set)
     sampler = BucketingSampler(test_set, batch_size, shuffle=data_shuffle)
     test_set = CudaDataLoader(gpu_id, test_set, 
@@ -444,6 +449,10 @@ if __name__ == '__main__':
     parser.add_argument('--clearml', action='store_true', 
                         default=False, 
                         help='whether to use ClearML for experiment manager')
+    parser.add_argument('--cache-size', '-cs', type=int, 
+                        default=1000,
+                        help="how much audio samples to store in RAM"\
+                             "for faster batch generation")
     parser.add_argument('--resume', type=int, 
                         default=None, 
                         help='Train experiment run to resume training')
