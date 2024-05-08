@@ -29,8 +29,8 @@ model:
     dropout: 0.1
 
 loss:
-  CrossEntropyLoss:
-    weights: null  # null if equal
+  CrossEntropyLoss:   # class name
+    weights: null     # null if equal
 
 train:
   metrics:  # for each train step only scalars
