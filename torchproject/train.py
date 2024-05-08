@@ -7,15 +7,13 @@ from glob import glob
 import torch
 from torch import Tensor
 from torch.nn.utils import clip_grad_norm_
-from .data import CudaDataLoader, BucketingSampler, BlockChainDataset
+from .data import CudaDataLoader, BucketingSampler, AntispoofDataset
 from .test import test_step
 from .metrics import init_loss, ClassificationMetrics, Loss
-from .models import model_init, IterativeModel
+from .models import init_model, BaseModel
 from . import utils
 from .utils.manager import ClearMLManager
 from .utils import EXPERIMENTS_DIR
-
-manager = None
 
 
 def get_run_name(runs_dir:str, run_id:int) -> str:
@@ -71,7 +69,7 @@ def get_better_metrics(metrics1:dict, metrics2:dict) -> dict:
 
 
 def train_step(
-        model:IterativeModel,
+        model:BaseModel,
         batch:Tuple[Tensor, Tensor],
         optimizer,
         loss_computer:Loss,
@@ -84,7 +82,7 @@ def train_step(
     x, target = batch
     # target - one hot (B, C) ?
 
-    logits, probs = model.predict(x)
+    logits, probs = model(x)
     # logits - before activation (for loss)
     # probs - after activation   (for acc)
 
@@ -146,9 +144,8 @@ def train(train_data:str,
     comment (str): postfix for experiment run name
     """
     experiment = experiment.lower().replace(' ', '_')
-    global manager
     train_logger, test_logger, loss = None, None, None
-    run_dir, run_name = None, None
+    manager, run_dir, run_name = None, None, None
     weights = None  # pretrained weights or from previous run
     start_epoch = 1
     hparams = dict()
@@ -234,41 +231,34 @@ def train(train_data:str,
     train_params = config["train"]
     test_params = config["test"]
     classes = config["classes"]
+    sr = config["sr"]
 
     # Load train data
-    train_set = BlockChainDataset(train_data, classes=classes)
+    preprocess_cfg = config["preprocess"]  # outside model
+    train_set = AntispoofDataset(train_data, classes=classes,
+                                 sr=sr, preprocess_cfg=preprocess_cfg)
     train_data_size = len(train_set)
-    features_list = train_set.get_features_names()
-    n_features = len(features_list)
+    sampler = BucketingSampler(train_set, batch_size,
+                               shuffle=data_shuffle)
+    train_set = CudaDataLoader(gpu_id, train_set, 
+                               collate_fn=train_set.collate, 
+                               pin_memory=True, num_workers=4,
+                               batch_sampler=sampler)
+    train_steps = len(train_set)  # number of train batches
 
     # Define model
     model_cfg = config["model"]
-    # required params
-    model_cfg["weights"] = weights or train_params["pretrained"]
-    model_cfg["n_classes"] = len(classes)
-    model_cfg["fdim"] = n_features
-    print(f'Start training with weights: {model_cfg["weights"]}')
+    weights = weights or train_params["pretrained"]
+    print(f'Start training with weights: {weights}')
     # None or path/to/model.pt
-    model = model_init(model_cfg,
-                       train=True,
+    model = init_model(model_cfg,
+                       weights=weights,
+                       training=True,
                        device=device)
 
-    # Define dataset approach (fit or batches)
-    iterative_train = isinstance(model, IterativeModel)
-    # assert not iterative_train
-    if iterative_train:
-        sampler = BucketingSampler(train_set, batch_size,
-                                   shuffle=data_shuffle)
-        train_set = CudaDataLoader(gpu_id, train_set, 
-                                collate_fn=train_set.collate, 
-                                pin_memory=True, num_workers=4,
-                                batch_sampler=sampler)
-        train_steps = len(train_set)  # number of train batches
-    else:
-        train_steps = None
-
     # Load test data
-    test_set = BlockChainDataset(test_data, classes=classes)
+    test_set = AntispoofDataset(test_data, classes=classes,
+                                sr=sr, preprocess_cfg=preprocess_cfg)
     test_data_size = len(test_set)
     sampler = BucketingSampler(test_set, batch_size, shuffle=data_shuffle)
     test_set = CudaDataLoader(gpu_id, test_set, 
@@ -295,8 +285,6 @@ def train(train_data:str,
         utils.dict2yaml(metadata, meta_yaml)
         if manager:
             manager.log_metadata(metadata)
-        utils.save_features_list(features_list, 
-                                 osp.join(run_dir, "features.txt"))
         
     # Init train metrics computer
     train_metrics_computer = ClassificationMetrics(
@@ -314,58 +302,51 @@ def train(train_data:str,
                                 logger=test_logger,
                                 log_title=not resume)
     
-    if iterative_train:
-        # Define loss
-        loss_cfg = train_params["loss"]
-        loss = init_loss(loss_cfg, device=device)
+    # Define loss
+    loss_cfg = train_params["loss"]
+    loss = init_loss(loss_cfg, device=device)
 
-        # Define optimizer
-        opt = train_params["opt"]
-        if opt == 'Adam':
-            optimizer = torch.optim.Adam(
-                model.parameters(), 
-                lr=train_params["learning_rate"], 
-                weight_decay=train_params['weight_decay'])
-        else:
-            raise Exception(f"No optimizer: '{opt}'")
+    # Define optimizer
+    opt = train_params["opt"]
+    if opt == 'Adam':
+        optimizer = torch.optim.Adam(
+        model.parameters(), 
+        lr=train_params["learning_rate"], 
+        weight_decay=train_params['weight_decay'])
+    else:
+        raise Exception(f"No optimizer: '{opt}'")
         
     best_metrics, best_epoch = dict(), None
-    epochs = epochs if iterative_train else 1
     if manager:
         manager.set_iterations(epochs - start_epoch + 1)
 
     for ep in range(start_epoch, epochs + 1):
         print(f"\n{ep}/{epochs} Epoch...")
-        model.train_mode()
+        model.train()
         if manager:
             manager.log_iteration(ep - start_epoch)
 
-        if iterative_train:
-            train_set.shuffle(ep)
-            # Progress bar
-            train_batches = utils.get_progress_bar(train_set, 
-                                                   total=train_steps, 
-                                                   title=f"Epoch {ep}")
+        train_set.shuffle(ep)
+        # Progress bar
+        train_batches = utils.get_progress_bar(train_set, 
+                                                total=train_steps, 
+                                                title=f"Epoch {ep}")
 
-            # Iterative train epoch is starting ...
-            for i, batch in enumerate(train_batches):
-                metrics = train_step(
-                    model=model,
-                    batch=batch,
-                    optimizer=optimizer,
-                    loss_computer=loss,
-                    metrics_computer=train_metrics_computer,
-                    train_params=train_params,
-                )
-                # filter out not required metrics
-                if (i+1) % log_step == 0:
-                    train_metrics_computer.log_metrics(
-                        metrics, epoch=ep, step=i+1)
-            # Train of epoch ends
-        else:
-            print("Train on whole data ...")
-            data = train_set.get_data(device=device, shuffle=data_shuffle)
-            model.fit(*data)
+        # Train epoch is starting ...
+        for i, batch in enumerate(train_batches):
+            metrics = train_step(
+                model=model,
+                batch=batch,
+                optimizer=optimizer,
+                loss_computer=loss,
+                metrics_computer=train_metrics_computer,
+                train_params=train_params,
+            )
+            # filter out not required metrics
+            if (i+1) % log_step == 0:
+                train_metrics_computer.log_metrics(
+                    metrics, epoch=ep, step=i+1)
+        # Train of epoch ends
 
         # Saving
         if not no_save:
@@ -374,7 +355,7 @@ def train(train_data:str,
             print(f"Weights save: '{weights_path}'")
 
         print('------------- Test ---------------')
-        model.eval_mode()
+        model.eval()
         # Progress bar
         test_batches = utils.get_progress_bar(test_set, 
                                               total=test_steps, 
@@ -440,7 +421,7 @@ def train(train_data:str,
 
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description='train CNN')
+    parser = argparse.ArgumentParser()
     parser.add_argument('--config', '-cfg', type=str, 
                         default='config.yaml', 
                         help='path/to/config.yaml')

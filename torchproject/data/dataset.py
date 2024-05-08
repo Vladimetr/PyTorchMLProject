@@ -12,10 +12,10 @@ from torch import Tensor
 from torch.utils.data import Dataset
 from torch.utils.data import DataLoader
 from torch.utils.data.sampler import Sampler
-from ..preprocess import init_preprocessor
+from ..preprocess import init_preprocessor, load_audio
 from .. import utils
 
-CSV_SEP = ','
+CSV_SEP = ' '
 
 
 class CudaDataLoader(DataLoader):
@@ -90,51 +90,29 @@ class BucketingSampler(Sampler):
             np.random.RandomState(epoch).shuffle(self.bins)
 
 
-class BlockChainDataset(Dataset):
-    def __init__(self, data_path:str, classes:List[str]):
+class AntispoofDataset(Dataset):
+    def __init__(self, data_path:str, classes:List[str], 
+                 sr:int=8000,
+                 preprocess_cfg:dict=None,
+                 ):
         """
-        config (dict): see config.yaml for example
+        data_path (str): /path/to/manifest.csv
+        |--audio--|--start--|--end--|--class--|
         """
         self.data_path = data_path
         print(f"Loading manifest '{data_path}'...")
-        df = pd.read_csv(data_path, sep=CSV_SEP)
-        self.data = df.to_dict(into=OrderedDict, orient='index')
-        self.features_names = list(df.columns)
-        self.features_names.remove("label")
+        data = pd.read_csv(data_path, sep=CSV_SEP)
         self.classes = classes
         self.n_classes = len(classes)
-        self.df = df
 
-    def get_features_names(self) -> List[str]:
-        return self.features_names
+        if preprocess_cfg:
+            preprocess_cfg = dict(preprocess_cfg)  # copy
+            self.preprocessor = init_preprocessor(preprocess_cfg)
+        else:
+            self.preprocessor = None
 
-    def get_data(self, device:str="cpu", shuffle=False
-                 ) -> Tuple[Tensor, Tensor]:
-        """
-        NOTE: out-of-memory may appear
-        """
-        df = self.df
-        if shuffle:
-            df = df.sample(frac=1)
-
-        print("Data extraction ...")
-        xs = []  # [(F, )]
-        for feature_name in self.features_names:
-            feature = df[feature_name].tolist()
-            xs.append(torch.tensor(feature))  
-        xs = torch.stack(xs, dim=1).to(device)  # (M, F)
-        xs = xs
-
-        labels = df["label"].tolist()
-        ys = []
-        for label in labels:
-            try:
-                y = self.classes.index(label)
-            except ValueError:
-                raise ValueError(f"Invalid label name '{label}'")
-            ys.append(y)
-        ys = torch.tensor(ys).to(device)
-        return xs, ys
+        self.data = data
+        self.sr = sr
 
     def __len__(self) -> int:
         """
@@ -148,21 +126,28 @@ class BlockChainDataset(Dataset):
         apply given preprocess
         Returns:
             tuple
-              (F, ): feature vector
+              (B, F, T): model input
               int: label
         """
-        features : dict = self.data[i]
-        label : str = features.pop("label")
-        assert list(features.keys()) == self.features_names
-        
-        # features must be preprocessed beforehand
-        x = torch.tensor(list(features.values()))
+        audio_path, start, end, class_name = self.data.iloc[i]
+
+        # load audio
+        sample, _ = load_audio(audio_path)
+        # (1, S)
+
+        # cut
+        x = sample[:1, int(self.sr * start) : int(self.sr * end)]
+        # (1, S')
+
+        # preprocess
+        if self.preprocessor:
+            x = self.preprocessor(x)
 
         # label (str) -> (int)
         try:
-            label = self.classes.index(label)
+            label = self.classes.index(class_name)
         except ValueError:
-            raise ValueError(f"Invalid label name '{label}'")
+            raise ValueError(f"Invalid label name '{class_name}'")
 
         return x, label
     
@@ -183,27 +168,27 @@ class BlockChainDataset(Dataset):
         Args:
             batch (list[Tensor, int])
         Returns:
-            (B, F): batch of inputs
+            (B, F, T) or (B, 1, S): batch of inputs
             (B, ): batch of labels
         """
         xs, ys = [], []
         for x, y in batch:
-            xs.append(x)
-            ys.append(y)
+            xs.append(x)  # (1, S)
+            ys.append(y)  # int
             
-        xs = torch.stack(xs, dim=0)  # (B, F)
-        ys = torch.tensor(ys, dtype=torch.long)  # (B)
+        xs = torch.stack(xs, dim=0)  # (B, 1, S)
+        ys = torch.tensor(ys, dtype=torch.long)  # (B, )
         return xs, ys
 
 
 
 if __name__ == '__main__':
     config = utils.config_from_yaml('config.yaml')
-    preprocess_params = config["preprocess"]
-    data_path = 'data/processed/test.v1.csv'
+    preprocess_cfg = config["preprocess"]
+    data_path = 'data/processed/train_manifest.v1.csv'
 
-    dataset = BlockChainDataset(data_path, classes=config["classes"], 
-                                preprocess_params=preprocess_params)
+    dataset = AntispoofDataset(data_path, classes=config["classes"], 
+                               preprocess_cfg=preprocess_cfg)
     sampler = BucketingSampler(dataset, batch_size=2, shuffle=True)
     dataset = CudaDataLoader(dataset=dataset, 
                           collate_fn=dataset.collate, 

@@ -1,15 +1,32 @@
-# order is critical for model
-classes:
-  - mixer
-  - game
-  - user
-  
-model:
-  class: random_forest
-  max_depth: 3
+# hint: use null for None variables
 
-# only for inference
-preprocess: null
+# order is critical for model
+n_classes: &n_classes 2
+classes:
+  - fake
+  - real
+sr: &sr 8000
+  
+# preprocess outside model
+preprocess:
+  LogmelPreprocess:  # class name
+    sr: *sr
+    wnd_step: 0.008
+    wnd_len: 0.010
+    nfilt: 40
+    nfft: 512
+
+model:
+  # preprocess inside model
+  preprocess: null
+  TCNClassification:  # class name
+    n_classes: *n_classes
+    timesteps: 376            # T for 3 sec audio
+    in_channels: 40           # F
+    channels: [64, 32, 16]    # 3 TempBlocks
+    hidden_dim: 100
+    kernel_size: 5
+    dropout: 0.1
 
 train:
   metrics:
@@ -18,16 +35,16 @@ train:
     - FN
     - FP
   pretrained: null
-  # only for iterative training
   loss:
     class: cross_entropy
-  opt: Adam
-  learning_rate: 0.001
+  opt: &opt Adam
+  learning_rate: &lr 0.001
   weight_decay: 0.005
   grad_norm: 1.0
 
 
 test:
+  weights: null  # default weights
   step_metrics:  # only scalars
     - acc
     - TP
@@ -44,6 +61,7 @@ test:
   plot_pr: False   # Precision-Recall curve
   plot_roc: False  # ROC curve
 
+
 manager:
   clearml:
     key_token: R5V25ELMF8K44HN6ZDP8
@@ -51,4 +69,5 @@ manager:
     subproject: True  # experiment format
   hparams:
     train:
-      learning_rate: 0.001
+      learning_rate: *lr
+      opt: *opt

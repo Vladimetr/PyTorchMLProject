@@ -5,11 +5,10 @@ from typing import Union, Tuple
 import argparse
 from math import isnan
 from torch import Tensor
-from .models import MLModel
-from .data import CudaDataLoader, BucketingSampler, BlockChainDataset
+from .data import CudaDataLoader, BucketingSampler, AntispoofDataset
 from . import utils
 from .utils.manager import ClearMLManager
-from .models import model_init, MLModel, IterativeModel
+from .models import init_model, BaseModel
 from .metrics import init_loss, ClassificationMetrics, Loss
 from .utils import EXPERIMENTS_DIR
 
@@ -63,14 +62,14 @@ def get_test_run(experiment:str, train_run_id:int=None) -> str:
     
 
 def test_step(
-        model:MLModel,
+        model:BaseModel,
         batch:Tuple[Tensor, Tensor],
         metrics_computer:ClassificationMetrics,
         loss_computer:Loss=None,
         ) -> dict:
     x, target = batch
     with torch.no_grad():
-        logits, probs = model.predict(x)
+        logits, probs = model(x)
     # logits - before activation (for loss)
     # probs - after activation   (for acc)
         
@@ -118,7 +117,7 @@ def test(data:str,
     comment (str): postfix for experiment run name
     """
     experiment = experiment.lower().replace(' ', '_')
-    logger, run_dir, manager = None, None, None
+    logger, run_dir, manager, weights = None, None, None, None
     hparams = dict()
 
     # Validate device
@@ -137,9 +136,8 @@ def test(data:str,
                                  'train', train_run_name)
         config = osp.join(train_run_dir, 'config.yaml')
         weights = osp.join(train_run_dir, 'weights', weights)
-    else:
-        weights = None  # weights must be defined in config
 
+    # Define config
     if isinstance(config, str):
         # load config from yaml
         config_yaml = config
@@ -186,15 +184,15 @@ def test(data:str,
 
     # Hyperparams overwrite config params
     utils.update_given_keys(config, hparams)
-    params = config["test"]
+    params : dict = config["test"]
     classes = config["classes"]
     model_cfg = config["model"]
-    # Redefine weights
-    if weights:
-        model_cfg["weights"] = weights
+    weights = weights or params.get("weights")
+    if not weights:
+        raise ValueError("Model weights must be defined")
 
     # Load test data
-    test_set = BlockChainDataset(data, classes=classes)
+    test_set = AntispoofDataset(data, classes=classes)
     data_size = len(data_size)
     sampler = BucketingSampler(test_set, batch_size, shuffle=data_shuffle)
     test_set = CudaDataLoader(gpu_id, test_set, 
@@ -206,8 +204,7 @@ def test(data:str,
     # Add specific info
     if manager:
         manager.set_iterations(test_steps)
-        weights_name = osp.split(model_cfg["weights"])[1]
-        manager.add_tags([f"weights: {weights_name}"])
+        manager.add_tags([f"weights: {weights}"])
 
     # Define metadata
     metadata = {
@@ -216,7 +213,7 @@ def test(data:str,
             "data_size": data_size,
             "test_steps": test_steps,
             "storage": run_dir,
-            "weights": model_cfg["weights"],
+            "weights": weights,
             
     }
     utils.pprint_dict(metadata)
@@ -227,18 +224,15 @@ def test(data:str,
             manager.log_metadata(metadata)
 
     # Define model
-    if not model_cfg["weights"]:
-        raise ValueError("Weights are not defined")
-    model = model_init(model_cfg,
-                       train=False,
+    model = init_model(model_cfg,
+                       weights=weights,
+                       training=False,
                        device=device)
     
-    iterative_train = isinstance(model, IterativeModel)
-    if iterative_train:
-        # Define loss
-        loss_name = config["loss"]
-        loss_params = config["loss"][loss_name]
-        loss = init_loss(loss_name, loss_params, device=device)
+    # Define loss
+    loss_name = config["loss"]
+    loss_params = config["loss"][loss_name]
+    loss = init_loss(loss_name, loss_params, device=device)
 
     # Init test metrics computer
     metrics_computer = ClassificationMetrics(

@@ -1,14 +1,18 @@
 """
 Preprocess raw audio sample
 """
-from typing import Union
+from typing import Union, Tuple
 import torch
+import torchaudio
 from torch import Tensor, nn
 from torchaudio.transforms import MelSpectrogram
 from . import utils
 
 SR = 8000  # sample rate
 
+def load_audio(audio_path:str) -> Tuple[Tensor, int]:
+    sample, sr = torchaudio.load(audio_path)
+    return sample, sr
 
 class BasePreprocess(nn.Module):
     """
@@ -57,7 +61,9 @@ class LogmelPreprocess(BasePreprocess):
         """
         features = self.features(samples)
         # (*, 1, F, T)
-        return torch.squeeze(features, features.dim()-3)
+        out = torch.squeeze(features, features.dim()-3)
+        # (*, F, T)
+        return out
 
 
 # Define your own preprocess algorithm
