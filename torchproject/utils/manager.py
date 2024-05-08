@@ -217,7 +217,7 @@ class ClearMLManager:
         # plot
         self.logger.report_scatter2d(
             title=f"ROC curve {class_name or ''}",
-            series='auc={:.2f}'.format(auc_score),
+            series='line',
             scatter=data,
             xaxis="FPR", yaxis="TPR (Recall)",
             labels=threshs.tolist()
@@ -228,13 +228,17 @@ class ClearMLManager:
             value = g_means[ix]
         else:
             raise ValueError(f"Unknown best criteria '{best_criteria}'")
+        
         # Plot best point
+        best_values = \
+            'thres={:.2f} auc={:.2f} {}={:.2f}'\
+            .format(threshs[ix], auc_score, best_criteria, value)
         self.logger.report_scatter2d(
             title=f"ROC curve {class_name or ''}",
-            series="{}={:.3f}".format(best_criteria, value),
+            series="best",
             scatter=data[ix:ix+1],
             xaxis="FPR", yaxis="TPR (Recall)",
-            labels=threshs[ix:ix+1].tolist(),
+            labels=[best_values],
             mode='markers'
         )
         return auc_score
@@ -273,7 +277,7 @@ class ClearMLManager:
         # plot
         self.logger.report_scatter2d(
             title=f"PR curve {class_name or ''}",
-            series='auc={:.2f}'.format(auc_score),
+            series='line',
             scatter=data,
             xaxis="Recall", yaxis="Precision",
             labels=threshs.tolist()
@@ -284,13 +288,17 @@ class ClearMLManager:
             value = f1_scores[ix]
         else:
             raise ValueError(f"Unknown best criteria '{best_criteria}'")
+        
         # Plot best point
+        best_values = \
+            'thres={:.2f} auc={:.2f} {}={:.2f}'\
+            .format(threshs[ix], auc_score, best_criteria, value)
         self.logger.report_scatter2d(
             title=f"PR curve {class_name or ''}",
-            series="{}={:.3f}".format(best_criteria, value),
+            series='best',
             scatter=data[ix:ix+1],
             xaxis="Recall", yaxis="Precision",
-            labels=threshs[ix:ix+1].tolist(),
+            labels=[best_values],
             mode='markers'
         )
         return auc_score
@@ -498,7 +506,16 @@ if __name__ == '__main__':
     }
     experiment = 'experiment'
     run_name = 'test'
-    manager = ClearMLManager(**params, experiment='test', run_name='train-006')
+    manager = ClearMLManager(**params, experiment='vova', run_name='test11')
+
+    manager.logger.report_scatter2d(
+        title='graph',
+        series="auc",
+        scatter=np.array([[0.60, 0.84]]),
+        labels=['thresh=0.48 auc=0.74'],
+        mode='markers'
+    )
+    exit()
 
     # pr, rec = 0.8932, 0.9260
     # manager.log_summary_metrics({

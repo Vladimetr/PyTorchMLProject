@@ -61,7 +61,7 @@ test:
   # via manager
   plot_conf_matrix: True
   plot_pr: True   # Precision-Recall curve
-  plot_roc: False  # ROC curve
+  plot_roc: True  # ROC curve
 
 
 manager:
