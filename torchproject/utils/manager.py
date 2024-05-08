@@ -174,6 +174,9 @@ class ClearMLManager:
         Some managers support logging confusion matrix
         NOTE: xaxis="target" and yaxis="predict"
         """
+        if not classes:
+            n_classes = conf_matrix.shape[0]
+            classes = list(map(str, range(n_classes)))
         # validate input
         self._validate_conf_matrix(conf_matrix, classes)
         step = step or self.max_step
@@ -190,7 +193,8 @@ class ClearMLManager:
                   preds:Union[torch.Tensor, np.ndarray], 
                   targs:Union[torch.Tensor, np.ndarray], 
                   pos_label:int=1,
-                  best_criteria:str='g-mean') -> float:
+                  best_criteria:str='g-mean',
+                  class_name:str=None) -> float:
         """ Plot ROC curve and returns AUC
         Args:
             preds (Tensor, np.ndarray): (N, ) float (probs) (0..1)
@@ -212,7 +216,7 @@ class ClearMLManager:
         data = np.stack((fpr, tpr), axis=1)
         # plot
         self.logger.report_scatter2d(
-            title='ROC curve',
+            title=f"ROC curve {class_name or ''}",
             series='auc={:.2f}'.format(auc_score),
             scatter=data,
             xaxis="FPR", yaxis="TPR (Recall)",
@@ -226,7 +230,7 @@ class ClearMLManager:
             raise ValueError(f"Unknown best criteria '{best_criteria}'")
         # Plot best point
         self.logger.report_scatter2d(
-            title='ROC curve',
+            title=f"ROC curve {class_name or ''}",
             series="{}={:.3f}".format(best_criteria, value),
             scatter=data[ix:ix+1],
             xaxis="FPR", yaxis="TPR (Recall)",
@@ -239,7 +243,8 @@ class ClearMLManager:
                  preds:Union[torch.Tensor, np.ndarray], 
                  targs:Union[torch.Tensor, np.ndarray], 
                  pos_label:int=1,
-                 best_criteria:str='f1') -> float:
+                 best_criteria:str='f1',
+                 class_name:str=None) -> float:
         """ Plot Precision-Recall curve and returns AUC
         Args:
             preds (Tensor, np.ndarray): (N, ) float (probs)
@@ -259,7 +264,7 @@ class ClearMLManager:
         corrects = recalls * precs > 0  # bool
         precs, recalls = precs[corrects], recalls[corrects], 
         threshs = threshs[corrects]
-        assert np.all((0 < threshs) & (threshs < 1))
+        assert np.all((0 <= threshs) & (threshs <= 1))
         data = np.stack((recalls, precs), axis=1)
         # (M, 2)
         # NOTE: xaxis=recalls, yaxis=precisions 
@@ -267,7 +272,7 @@ class ClearMLManager:
 
         # plot
         self.logger.report_scatter2d(
-            title='PR curve',
+            title=f"PR curve {class_name or ''}",
             series='auc={:.2f}'.format(auc_score),
             scatter=data,
             xaxis="Recall", yaxis="Precision",
@@ -281,7 +286,7 @@ class ClearMLManager:
             raise ValueError(f"Unknown best criteria '{best_criteria}'")
         # Plot best point
         self.logger.report_scatter2d(
-            title='PR curve',
+            title=f"PR curve {class_name or ''}",
             series="{}={:.3f}".format(best_criteria, value),
             scatter=data[ix:ix+1],
             xaxis="Recall", yaxis="Precision",

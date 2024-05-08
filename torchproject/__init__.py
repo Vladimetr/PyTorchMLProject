@@ -1,1 +1,1 @@
-PROJECT_NAME = "BlockChain"
+PROJECT_NAME = "Antispoof"

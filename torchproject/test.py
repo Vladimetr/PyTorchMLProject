@@ -66,7 +66,15 @@ def test_step(
         batch:Tuple[Tensor, Tensor],
         metrics_computer:ClassificationMetrics,
         loss_computer:Loss=None,
+        accumulate_preds=False,
+        accumulate_probs=False,
         ) -> dict:
+    """
+    accumulate_preds (bool): whether to accumulate
+        preds - for summary confusion matrix
+    accumulate_probs (bool): whether to accumulate
+        probs - for summary plots like PR, ROC
+    """
     x, target = batch
     with torch.no_grad():
         logits, probs = model(x)
@@ -75,7 +83,8 @@ def test_step(
         
     # Metrics computing
     metrics = metrics_computer.compute(probs.cpu(), target.cpu(),
-                                       accumulate=True)
+                                       accumulate_preds=accumulate_preds,
+                                       accumulate_probs=accumulate_probs)
     # CrossEntropy loss
     if loss_computer:
         loss, loss_values = loss_computer(logits, target)
@@ -96,7 +105,7 @@ def test(data:str,
          no_save:bool=False,
          experiment:str='experiment',
          run_id:int=None,
-         weights:str='best.pt',
+         weights:str=None,
          clearml:bool=False,
          data_shuffle:bool=True,
          log_step:int=1,
@@ -108,16 +117,19 @@ def test(data:str,
     experiment (str): experiment name
     run_id (int): train experiment RunID for reference, i.e.
         loading config and specific weights
-    weights (str): weights name to load from given train run
-    use_mlflow (bool): whether to manage experiment with MLFlow
-    use_clearml (bool): whether to manage experiment with ClearML
-    tensorboard (bool): whether to log step metrics to TB
+    weights (str): 
+        if run_id is not None:
+            given weights or 'best.pt' within run_id 
+        else:
+            /path/to/weights.pt
+            If None, weights will be loaded from config:test:weights
+    clearml (bool): whether to manage experiment with ClearML
     data_shuffle (bool): whether to shuffle data
     log_step (int): interval of loggoing step metrics
     comment (str): postfix for experiment run name
     """
     experiment = experiment.lower().replace(' ', '_')
-    logger, run_dir, manager, weights = None, None, None, None
+    logger, run_dir, manager = None, None, None
     hparams = dict()
 
     # Validate device
@@ -135,6 +147,7 @@ def test(data:str,
         train_run_dir = osp.join(EXPERIMENTS_DIR, experiment,
                                  'train', train_run_name)
         config = osp.join(train_run_dir, 'config.yaml')
+        weights = weights or 'best.pt'
         weights = osp.join(train_run_dir, 'weights', weights)
 
     # Define config
@@ -159,7 +172,7 @@ def test(data:str,
 
         # Init manager
         if clearml:
-            params = config["manager"]
+            params = config["manager"]["clearml"]
             params.update({
                 "experiment": experiment,
                 "run_name": 'test-' + run_name,
@@ -187,13 +200,16 @@ def test(data:str,
     params : dict = config["test"]
     classes = config["classes"]
     model_cfg = config["model"]
+    sr = config["sr"]
     weights = weights or params.get("weights")
     if not weights:
         raise ValueError("Model weights must be defined")
 
     # Load test data
-    test_set = AntispoofDataset(data, classes=classes)
-    data_size = len(data_size)
+    test_set = AntispoofDataset(data, classes=classes,
+                                sr=sr, 
+                                preprocess_cfg=config["preprocess"])
+    data_size = len(test_set)
     sampler = BucketingSampler(test_set, batch_size, shuffle=data_shuffle)
     test_set = CudaDataLoader(gpu_id, test_set, 
                               collate_fn=test_set.collate,
@@ -230,29 +246,29 @@ def test(data:str,
                        device=device)
     
     # Define loss
-    loss_name = config["loss"]
-    loss_params = config["loss"][loss_name]
-    loss = init_loss(loss_name, loss_params, device=device)
+    loss = init_loss(config["loss"], device=device)
 
     # Init test metrics computer
     metrics_computer = ClassificationMetrics(
                                 classes=classes,
                                 metrics=params["step_metrics"],
-                                step=True, epoch=True,
+                                step=True, epoch=False,
                                 logger=logger)
 
     test_set.shuffle(15)
     for step, batch in enumerate(test_set):
         metrics = test_step(
-            model,
-            batch,
-            loss,
-            metrics_computer
+            model=model,
+            batch=batch,
+            loss_computer=loss,
+            metrics_computer=metrics_computer,
+            accumulate_preds=params["plot_conf_matrix"],
+            accumulate_probs=params["plot_roc"] or params["plot_pr"],
         )
         if (step + 1) % log_step == 0:
-            metrics_computer.log_metrics(metrics, step=step)
+            metrics_computer.log_metrics(metrics, step=step+1)
             if manager:
-                manager.log_step_metrics(metrics, step)
+                manager.log_step_metrics(metrics, step=step+1)
 
     sum_metrics = metrics_computer.summary(params["sum_metrics"])
     print("\n--- Summary metrics ---")
@@ -262,13 +278,17 @@ def test(data:str,
     metrics_computer.pprint_conf_matrix(conf_matrix)
     
     if manager:
+        sum_metrics.pop("conf_matrix", None)
         manager.log_summary_metrics(sum_metrics)
         if params["plot_conf_matrix"]:
-            manager.log_confusion_matrix(conf_matrix)
+            manager.log_confusion_matrix(conf_matrix, 
+                                         classes=classes)
         if params["plot_roc"]:
-            raise NotImplementedError()
+            for cls in classes:
+                metrics_computer.plot_roc(cls, manager)
         if params["plot_pr"]:
-            raise NotImplementedError()
+            for cls in classes:
+                metrics_computer.plot_pr(cls, manager)
         manager.close()
 
 
@@ -278,7 +298,7 @@ if __name__ == '__main__':
     parser.add_argument('--config', '-cfg', type=str, default='config.yaml', 
                         help='path/to/config.yaml')
     parser.add_argument('--data', '-d', type=str, 
-                        default='data/processed/test_manifest.v1.csv',
+                        default='data/processed/test.v1.csv',
                         help='path/to/data')
     parser.add_argument('--batch_size', '-bs', type=int, default=20)
     parser.add_argument('--gpu', type=int, dest="gpu_id", default=0,
@@ -294,7 +314,7 @@ if __name__ == '__main__':
                         default='best.pt', 
                     help='Weights name for loading from this run')
     parser.add_argument('--clearml', action='store_true', 
-                        dest='use_clearml', default=False, 
+                        default=False, 
                         help='whether to use ClearML for experiment manager')
     parser.add_argument('--log-step', '-ls', type=int, default=1, 
                         help='interval of log metrics')

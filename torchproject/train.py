@@ -109,9 +109,9 @@ def train_step(
     model.validate_grads()
 
     # metrics computing
-    metrics = metrics_computer.compute(probs, target,
-                                       accumulate=False)
+    metrics = metrics_computer.compute(probs, target)
     metrics.update(loss_values)
+
     return metrics
 
 
@@ -303,7 +303,7 @@ def train(train_data:str,
                                 log_title=not resume)
     
     # Define loss
-    loss_cfg = train_params["loss"]
+    loss_cfg = config["loss"]
     loss = init_loss(loss_cfg, device=device)
 
     # Define optimizer
@@ -366,7 +366,8 @@ def train(train_data:str,
                 model=model,
                 batch=batch,
                 loss_computer=loss,
-                metrics_computer=test_metrics_computer
+                metrics_computer=test_metrics_computer,
+                accumulate_preds=True,  # for summary conf matrix
             )
             test_metrics_computer.log_metrics(
                     metrics, epoch=ep, step=i+1)
@@ -439,7 +440,7 @@ if __name__ == '__main__':
                         help='no save results')
     parser.add_argument('--experiment', '-exp', type=str, 
                         default='experiment', 
-                        help='Name of existed MLFlow experiment')
+                        help='Name of experiment')
     parser.add_argument('--clearml', action='store_true', 
                         default=False, 
                         help='whether to use ClearML for experiment manager')

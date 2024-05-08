@@ -3,6 +3,8 @@ from typing import List
 from abc import ABCMeta, abstractmethod
 import torch
 from  torch import Tensor
+from .utils.manager import ClearMLManager
+
 
 class Loss(metaclass=ABCMeta):
     """ Abstract Loss """
@@ -50,15 +52,28 @@ class CrossEntropyLoss(Loss):
         return loss, loss_values
 
 
-def init_loss(loss_cfg:dict, device='cpu') -> Loss:
+def init_loss(loss_cfg:dict,
+              device:str="cpu"
+              ) -> Loss:
+    """
+    loss_cfg (dict): 
+        {
+            "{class_name}": kwargs (dict)
+        }
+    """
     loss_cfg = dict(loss_cfg)  # copy
-    loss_class = loss_cfg.pop("class")
-    if loss_class == 'cross_entropy':
-        loss = CrossEntropyLoss(**loss_cfg, device=device)
-        
-    # another loss
-    else:
-        raise ValueError(f"Invalid loss '{loss_class}'")
+    name = next(iter(loss_cfg))
+    params = loss_cfg[name]
+    try:
+        # define class
+        loss = globals()[name]
+    except KeyError:
+        raise ValueError(f"Invalid loss name '{name}'")
+    try:
+        # init
+        loss = loss(**params, device=device)
+    except TypeError:
+        raise ValueError(f"Invalid loss params {params}")
     return loss
 
 
@@ -173,8 +188,7 @@ class ClassificationMetrics:
         tp = conf_matrix[class_indx, class_indx].item()
         return tp
     
-    @staticmethod
-    def tn(class_indx:int,
+    def tn(self, class_indx:int,
            pred:Tensor, targ:Tensor, 
            conf_matrix:Tensor=None) -> int:
         """
@@ -187,7 +201,14 @@ class ClassificationMetrics:
         Returns:
             int: true negative
         """
-        raise NotImplementedError()
+        if conf_matrix is None:
+            conf_matrix = self.conf_matrix(pred, targ)  # (C, C)
+        s = conf_matrix.sum().item()
+        tp = conf_matrix[class_indx, class_indx].item()
+        pred_sum = conf_matrix[class_indx, :].sum().item()
+        targ_sum = conf_matrix[:, class_indx].sum().item()
+        tn = s - pred_sum - targ_sum + tp
+        return tn
     
     def fp(self, class_indx:int,
            pred:Tensor, targ:Tensor, 
@@ -322,13 +343,18 @@ class ClassificationMetrics:
 
 
     def compute(self, probs:Tensor, targ:Tensor,
-                accumulate=False) -> dict:
+                accumulate_preds=False,
+                accumulate_probs=False) -> dict:
         """
         B - batch size
         C - n classes
         Args:
             probs (B, C): probs for each class
             targ (B, )): target indexes class
+            accumulate_preds (bool): whether to accumulate
+                preds - for summary confusion matrix
+            accumulate_probs (bool): whether to accumulate
+                probs - for summary plots like PR, ROC
         Returns:
             dict: dict with metrics
         """
@@ -348,9 +374,12 @@ class ClassificationMetrics:
 
         result = self.from_conf_matrix(metrics, conf_matrix)
 
-        if accumulate:
-            # accumulating confusion matrix is enough
+        if accumulate_preds:
             self.sum_conf_matrix += conf_matrix
+        if accumulate_probs:
+            self.sum_probs.append(probs.to(torch.float16))
+            self.sum_targs.append(targ)
+
         return result
     
     def summary(self, metrics:List[str]) -> dict:
@@ -370,6 +399,10 @@ class ClassificationMetrics:
         self.sum_conf_matrix = torch.zeros(self.n_classes, 
                                            self.n_classes,
                                            dtype=torch.int)
+        self.sum_probs = []
+        # for each sample probs [(B, C)]
+        self.sum_targs = []
+        # for each sample targets [(B, )]
 
     def log_metrics(self, metrics:dict, epoch:int=None, step:int=None):
         items = dict(metrics)
@@ -429,6 +462,49 @@ class ClassificationMetrics:
             out_str += "\n" + row
 
         print(out_str)
+
+    def plot_pr(self, class_:str, manager:ClearMLManager):
+        """
+        Plot Precision-Recall curve in ClearML
+        based on summary (accumulated) probs and targets
+        """
+        try:
+            cls_indx = self.classes.index(class_)
+        except ValueError:
+            raise ValueError(f"Unknown class name '{class_}'")
+        sum_probs = torch.concat(self.sum_probs, dim=0)
+        # (M, C)
+        cls_probs = sum_probs[:, cls_indx]
+        
+        sum_targs = torch.concat(self.sum_targs, dim=0)
+        # (M, )
+        cls_targs = (sum_targs == cls_indx).to(torch.int8)
+
+        manager.plot_pr_curve(cls_probs, cls_targs, 
+                              pos_label=None,
+                              class_name=class_)
+        
+    def plot_roc(self, class_:str, manager:ClearMLManager):
+        """
+        Plot ROC curve in ClearML
+        based on summary (accumulated) probs and targets
+        """
+        try:
+            cls_indx = self.classes.index(class_)
+        except ValueError:
+            raise ValueError(f"Unknown class name '{class_}'")
+        sum_probs = torch.concat(self.sum_probs, dim=0)
+        # (M, C)
+        cls_probs = sum_probs[:, cls_indx]
+        
+        sum_targs = torch.concat(self.sum_targs, dim=0)
+        # (M, )
+        cls_targs = (sum_targs == cls_indx).to(torch.int8)
+
+        manager.plot_roc_curve(cls_probs, cls_targs, 
+                               pos_label=None,
+                               class_name=class_)
+
 
 
 

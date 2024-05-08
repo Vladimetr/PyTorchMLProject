@@ -1,4 +1,5 @@
-__pychache__
+__pycache__
+.ipynb_checkpoints
 blockchain_ml/__pycache__
 blockchain_ml/data/__pycache__
 blockchain_ml/models/__pycache__
@@ -10,7 +11,13 @@ data/
 debug.py
 
 # not used yet
-docs/clearml.md
+experiments/
+models/
+notebooks/
+references/
+reports/
+tests/
+torch_serve/
 docs/img
 !docs/img/image.png
 blockchain_ml/data/base_DistributedSampler.py

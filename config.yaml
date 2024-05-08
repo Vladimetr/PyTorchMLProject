@@ -28,15 +28,17 @@ model:
     kernel_size: 5
     dropout: 0.1
 
+loss:
+  CrossEntropyLoss:
+    weights: null  # null if equal
+
 train:
-  metrics:
+  metrics:  # for each train step only scalars
     - acc
     - TP
     - FN
     - FP
   pretrained: null
-  loss:
-    class: cross_entropy
   opt: &opt Adam
   learning_rate: &lr 0.001
   weight_decay: 0.005
@@ -57,8 +59,8 @@ test:
     - recall
     - conf_matrix
   # via manager
-  plot_conf_matrix: False
-  plot_pr: False   # Precision-Recall curve
+  plot_conf_matrix: True
+  plot_pr: True   # Precision-Recall curve
   plot_roc: False  # ROC curve
 
 
