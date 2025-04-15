@@ -1,5 +1,6 @@
 from collections import OrderedDict
-from typing import List
+from typing import List, Dict
+import sys
 from abc import ABCMeta, abstractmethod
 import torch
 from  torch import Tensor
@@ -18,13 +19,22 @@ class Loss(metaclass=ABCMeta):
         pass
 
     @abstractmethod
-    def __call__(self, pred:Tensor, targ:Tensor) -> dict:
+    def __call__(self, pred:Tensor, targ:Tensor,
+                 rn_indices:Tensor=None, lam:Tensor=None) -> dict:
         """
         B - batch size
         C - n classes
+        NOTE: some losses support mixup method
+        https://github.com/fschmid56/EfficientAT/blob/a425fdce92572e602a1d5634799bd9f1f2efa806/ex_esc50.py#L103
+        'rn_indices' and 'lam' are provided for this
         Args:
             pred (B, C): predicted logits
             targ (B, C)): target one hot
+            rn_indices (): random indices
+                None by default
+            lam (): lambda. None by default
+            If your loss doesn't support mixup
+            raise NotImplementedError()
         Returns:
             tuple:
               loss: object with method backward()
@@ -40,12 +50,50 @@ class CrossEntropyLoss(Loss):
     def __init__(self, device='cpu', weights=None):
         if isinstance(weights, list):
             weights = Tensor(weights)
-        self.loss = torch.nn.CrossEntropyLoss(weight=weights)
+        self.loss = torch.nn.CrossEntropyLoss(weight=weights,
+                                              reduction="none")
         self.loss = self.loss.to(device)
 
-    def __call__(self, pred: Tensor, targ: Tensor) -> tuple:
-        loss = self.loss(pred, targ)
+    def __call__(self, pred: Tensor, targ: Tensor,
+                 rn_indices:Tensor=None, lam:Tensor=None) -> tuple:
+        if rn_indices is not None:
+            # mixup
+            bs = pred.shape[0]
+            loss1 = self.loss(pred, targ)  # (B, C)
+            loss2 = self.loss(pred, targ[rn_indices])  # (B, C)
+            loss = loss1 * lam.reshape(bs) + loss2 * (1. - lam.reshape(bs))
+            loss = loss.mean()
+            ce_value = loss.item()
+            loss_values = {
+                "CrossEntropyLoss": ce_value,
+            }
+            return loss, loss_values
+
+        # no mixup
+        loss = self.loss(pred, targ).mean()
         ce_value = loss.item()  # float
+        loss_values = {
+            "CrossEntropyLoss": ce_value,
+        }
+        return loss, loss_values
+
+
+class MixupCrossEntropyLoss(Loss):
+    def __init__(self, device='cpu', weights=None):
+        if isinstance(weights, list):
+            weights = Tensor(weights)
+        self.loss = torch.nn.CrossEntropyLoss(weight=weights, 
+                                              reduction="none")
+        self.loss = self.loss.to(device)
+
+    def __call__(self, pred: Tensor, targ: Tensor,
+                 rn_indices:Tensor, lam:Tensor) -> tuple:
+        bs = pred.shape[0]
+        loss1 = self.loss(pred, targ)  # (B, C)
+        loss2 = self.loss(pred, targ[rn_indices])  # (B, C)
+        loss = loss1 * lam.reshape(bs) + loss2 * (1. - lam.reshape(bs))
+        loss = loss.mean()
+        ce_value = loss.item()
         loss_values = {
             "CrossEntropyLoss": ce_value,
         }
@@ -61,8 +109,7 @@ def init_loss(loss_cfg:dict,
             "{class_name}": kwargs (dict)
         }
     """
-    loss_cfg = dict(loss_cfg)  # copy
-    name = next(iter(loss_cfg))
+    name = loss_cfg["use"]
     params = loss_cfg[name]
     try:
         # define class
@@ -77,38 +124,48 @@ def init_loss(loss_cfg:dict,
     return loss
 
 
-# all valid metrics
-METRICS = ["TP", "FN", "FP", "TN", 
-           "acc", "recall", "precision", 
-           "conf_matrix",
-]
+# metrics that can be computed on each step 
+# they are based on confusion matrix
+CM_METRICS = ["conf_matrix",
+              "TP", "FN", "FP", "TN", 
+              "acc", "recall", "precision" 
+               ]
 # metrics that are defined for particular class
 CLASS_METRICS = ["TP", "FN", "FP", "TN",
                  "recall", "precision"
                  ]
+# plots based on probs (not preds) and targets
+# not able for step metrics
+PLOTS = ["PR-curve", "ROC-curve"]
 CSV_SEP = ' '
 
 
 class ClassificationMetrics:
-    def __init__(self, classes:List[str], metrics:List[str],
+    def __init__(self, classes:List[str], 
+                 step_metrics:List[str]=[],
+                 summary_metrics:List[str]=[],
                  logger=None, epoch=False, step=False,
                  log_title=True):
         """
         classes (list[str]): C-list of class names
         metrics (list[str]): order of metrics to compute
+                             in method `compute()`
         epoch (bool): whether to log epoch
         step (bool): whether to log step
         log_title (bool): whether log column names
+            Log title can be skipped if this is a resume
+            of existed experiment
         """
-        self.compute_metrics = metrics 
+        assert not any([m in PLOTS for m in step_metrics]), \
+            f"Step metrics can not be from {PLOTS}"
+        # Get step metrics list that will be computed
+        # based on conf matrix (CM)
+        self.cm_metrics = list(filter(lambda x: x in CM_METRICS, 
+                                      step_metrics))
+        self.summary_metrics = summary_metrics
 
-        # Check given metrics are in valid list
-        for metric_name in metrics:
-            if not metric_name in METRICS:
-                raise ValueError(f"Invalid metric '{metric_name}'")
-
-        # All of these metrics are computed based on conf matrix
-        self.metrics_funcs = {
+        # All of these metrics are computed based on conf matrix (CM)
+        self.cm_metrics_funcs = {
             "TP": self.tp,
             "FN": self.fn,
             "TN": self.tn,
@@ -116,6 +173,7 @@ class ClassificationMetrics:
             "acc": self.accuracy,
             "recall": self.recall,  # TPR
             "precision": self.precison,
+
         }
 
         # define metrics logging format
@@ -124,12 +182,39 @@ class ClassificationMetrics:
         self.epoch = epoch
         self.step = step
         self.logger = logger
-        self._init_log_format(log_title=log_title)
-        self.reset_summary()
+        self._init_log_format(step_metrics, log_title=log_title)
+        self._init_summary(summary_metrics)
 
-    def _init_log_format(self, log_title=True):
+    def _init_summary(self, metrics:List[str]):
+        self.accumulate_matrix = False
+        self.accumulate_probs = False  # for PLOTS
+        self.avg_metrics : Dict[str, list] = dict()
+        for metric in metrics:
+            # confusion matrix metrics
+            if metric in CM_METRICS:
+                self.sum_conf_matrix = torch.zeros(self.n_classes, 
+                                                   self.n_classes,
+                                                   dtype=torch.int)
+                self.accumulate_matrix = True
+            elif metric in PLOTS:
+                self.sum_probs, self.sum_targs = [], []
+                self.accumulate_probs = True
+            else:
+                self.avg_metrics[metric] = []
+                # avg metric = sum of list items / N
+        self.summary_metrics = metrics
+
+    def _init_log_format(self, metrics:List[str], log_title=True):
+        """ Create log format for writing step metrics
+        and define title in it
+        epoch | step | metric1-name | metric2-name |
+          1   |   1  |    0.479     | 0.979
+        NOTE: if logger file is defined
+        these files can be parsed for plotting
+        step metrics in TensorBoard as example
+        """
         log_items = []
-        for metric_name in self.compute_metrics:
+        for metric_name in metrics:
             if metric_name in CLASS_METRICS:
                 log_items += [f"{metric_name}-{class_name}" 
                               for class_name in self.classes]
@@ -325,38 +410,45 @@ class ClassificationMetrics:
     def from_conf_matrix(self, metrics:List[str], conf_matrix:Tensor
                          ) -> dict:
         """ Extract given metrics from confusion matrix
+        Args:
+            metrics (list[str]): list of metric names within CM_METRICS
+            conf_matrix (Tensor): (C, C) confusion matrix
+        Returns:
+            dict: keys are metrics from given list
         """
         result = OrderedDict()
         for metric_name in metrics:
-            if metric_name in CLASS_METRICS:
+            if metric_name == "conf_matrix":
+                result["conf_matrix"] = conf_matrix
+            elif metric_name in CLASS_METRICS:
+                # compute this metric for each class
                 for class_i, class_name in enumerate(self.classes):
-                    func = self.metrics_funcs[metric_name]
+                    func = self.cm_metrics_funcs[metric_name]
                     name = f"{metric_name}-{class_name}"
                     result[name] = func(pred=None, targ=None,
                                         class_indx=class_i,
                                         conf_matrix=conf_matrix)
             else:
-                func = self.metrics_funcs[metric_name]
+                func = self.cm_metrics_funcs[metric_name]
                 result[metric_name] = func(pred=None, targ=None,
                                            conf_matrix=conf_matrix)
         return result
 
-
-    def compute(self, probs:Tensor, targ:Tensor,
-                accumulate_preds=False,
-                accumulate_probs=False) -> dict:
+    def step_metrics(self, probs:Tensor, targ:Tensor,
+                     add_summary=False, 
+                     precomputed:dict={}) -> dict:
         """
+        Compute defined metrics after new train/test step
         B - batch size
         C - n classes
         Args:
             probs (B, C): probs for each class
             targ (B, )): target indexes class
-            accumulate_preds (bool): whether to accumulate
-                preds - for summary confusion matrix
-            accumulate_probs (bool): whether to accumulate
-                probs - for summary plots like PR, ROC
+            add_summary (bool): whether to add summary
+            precomputed: dict with precomputed metrics
+                (for ex. losses) that can be logged or summarized
         Returns:
-            dict: dict with metrics
+            dict: dict with `step_metrics`
         """
         if probs.shape[0] != targ.shape[0]:
             raise ValueError("Mismatch probs and targ shapes")
@@ -365,35 +457,67 @@ class ClassificationMetrics:
         # class indexes with max prob (don't use threshold here)
         pred = torch.max(probs, dim=1)[1]  # (B, )
         
-        # Confusion matrix is core of following metrics
-        metrics = list(self.compute_metrics)  # copy
-        conf_matrix = self.conf_matrix(pred=pred, targ=targ)
-        if "conf_matrix" in metrics:
-            result["conf_matrix"] = conf_matrix
-            metrics.remove("conf_matrix")
+        # Compute metrics that are based on confusion matrix
+        conf_matrix = None
+        if self.cm_metrics:
+            conf_matrix = self.conf_matrix(pred, targ)
+            metrics = self.from_conf_matrix(self.cm_metrics, conf_matrix)
+        else:
+            metrics = OrderedDict()
 
-        result = self.from_conf_matrix(metrics, conf_matrix)
+        # add precomputed metrics
+        metrics.update(precomputed)
 
-        if accumulate_preds:
-            self.sum_conf_matrix += conf_matrix
-        if accumulate_probs:
-            self.sum_probs.append(probs.to(torch.float16))
-            self.sum_targs.append(targ)
+        if add_summary:
+            self.add_summary(probs, targ, conf_matrix, precomputed)
 
-        return result
+        return metrics
     
-    def summary(self, metrics:List[str]) -> dict:
-        """ Get summary of accumulated metrics 
-        """
-        result = OrderedDict()
-        metrics = list(metrics)  # copy
-        if "conf_matrix" in metrics:
-            result["conf_matrix"] = self.sum_conf_matrix
-            metrics.remove("conf_matrix")
+    def add_summary(self, 
+                    probs:Tensor=None, targ:Tensor=None,
+                    conf_matrix:Tensor=None,
+                    precomputed:dict={}):
+        # for confusion matrix metrics
+        if self.accumulate_matrix:
+            if conf_matrix is None:
+                pred = torch.max(probs, dim=1)[1]
+                conf_matrix = self.conf_matrix(pred, targ)
+            self.sum_conf_matrix += conf_matrix
+        # for plots
+        if self.accumulate_probs:
+            self.sum_probs.append(probs)
+            self.sum_targs.append(targ)
+        # precomputed
+        for metric, values in self.avg_metrics.items():
+            try:
+                value = precomputed[metric]
+            except KeyError:
+                raise Exception(f"Metric {metric} must be precomputed "\
+                                "for summary")
+            values.append(value)
 
-        result.update(self.from_conf_matrix(metrics,
-                                            self.sum_conf_matrix))
-        return result
+    def get_summary(self) -> dict:
+        """ Get summary of accumulated metrics 
+        NOTE: plots are built using other methods
+        Returns:
+            dict: dict with `summary_metrics`
+        """
+        metrics = OrderedDict()
+
+        # confusion matrix summary metrics
+        cm_sum_metrics = list(filter(lambda x: x in CM_METRICS, 
+                                     self.summary_metrics))
+        
+        if cm_sum_metrics:
+            a = self.from_conf_matrix(cm_sum_metrics, self.sum_conf_matrix)
+            metrics.update(a)
+
+        # avg precomputed metrics
+        for metric, values in self.avg_metrics.items():
+            avg = sum(values) / len(values)
+            metrics[metric] = avg
+
+        return metrics
     
     def reset_summary(self):
         self.sum_conf_matrix = torch.zeros(self.n_classes, 
@@ -403,8 +527,13 @@ class ClassificationMetrics:
         # for each sample probs [(B, C)]
         self.sum_targs = []
         # for each sample targets [(B, )]
+        for metric in self.avg_metrics.keys():
+            self.avg_metrics[metric] = []
 
     def log_metrics(self, metrics:dict, epoch:int=None, step:int=None):
+        """ Write given metrics to stdout 
+        or file if logger was defined
+        """
         items = dict(metrics)
         if epoch and 'epoch' in self.log_items:
             items['epoch'] = epoch
@@ -430,7 +559,11 @@ class ClassificationMetrics:
             print(log_line)
 
     def pprint(self, metrics:dict, line=True, 
-               with_conf_matrix:bool=False):
+               with_conf_matrix:bool=False,
+               duplicate_file:str=None):
+        """
+        duplicate_file (str): file to duplicate pprint
+        """
         msg = []
         metrics = dict(metrics)  # copy
         conf_matrix = metrics.pop("conf_matrix", None)
@@ -438,14 +571,21 @@ class ClassificationMetrics:
             if isinstance(v, float):
                 v = '{:.2f}'.format(v)
             msg.append(f"{k}={v}")
-        if line:
-            print(" | ".join(msg))
-        print("\n".join(msg))
+        output = " | ".join(msg) if line else "\n".join(msg)
+        print(output)
+        if duplicate_file:
+            with open(duplicate_file, 'a') as f:
+                print(output, file=f)
         if with_conf_matrix and conf_matrix is not None:
-            self.pprint_conf_matrix(conf_matrix)
+            self.pprint_conf_matrix(conf_matrix, duplicate_file=duplicate_file)
 
-    def pprint_conf_matrix(self, conf_matrix:Tensor):
-        max_class_name = max([len(cls_name) for cls_name in self.classes])
+    def pprint_conf_matrix(self, conf_matrix:Tensor, 
+                           duplicate_file:str=None):
+        """
+        duplicate_file (str): file to duplicate pprint
+        """
+        max_class_name = max([len(cls_name) \
+                              for cls_name in self.classes])
         cell_size = max_class_name + 2  #  "-dog-"
         row_title = ' ' * cell_size + '|'
         for class_name in self.classes:
@@ -461,7 +601,14 @@ class ClassificationMetrics:
                          .format(conf_matrix[j, i])
             out_str += "\n" + row
 
-        print(out_str)
+        n_classes = conf_matrix.shape[0]
+        if n_classes > 10:
+            print("Number of classes is too large for print confusion matrix")
+        else:
+            print(out_str)
+        if duplicate_file:
+            with open(duplicate_file, 'a') as f:
+                print(out_str, file=f)
 
     def plot_pr(self, class_:str, manager:ClearMLManager):
         """

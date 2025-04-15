@@ -1,10 +1,15 @@
-Voice Antispoofing with ML
-==============
-The task is to define whether given speech segments belongs to real human or not. </br>
-</br>
+Распознавание (обнаружение) звуков из целевого списка
+================
+**Формулировка задачи по ТЗ**: на аудиопотоке обнаружить звук из целевого списка и выдать триггер. </br>
 
+Целевой список классов</br>
+- **"animal"** - *звуки животных*  
+- **"technic"** - *бытовые техники*
+- **"speech"** -  *Речь человека* </br>
+
+> Модель может классифицировать и другие звуки, если это повышает ее качество для распознавания целевых классов.
+
+## Структура проекта
 ![structure image](/docs/img/image.png)
 
-</br>
-<a href="http://10.30.27.51:8080/projects/159ad5a3052b402eb62124fd692962d3/projects" target="_blank">ClearML Manager</a>
-</br> See docs/ for particular information
+See docs/ for particular information

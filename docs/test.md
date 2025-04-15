@@ -15,8 +15,22 @@ See example in `dev/experiments/my_experiment/test/001-1/` </br>
 > For example, it's allowed to test same model (from same train config) on different test data
 
 
-Parametres
-----------
+Run
+------------
+see `docker/run.sh`
+```bash
+docker run -it --rm \
+    ...
+    $RUN_DOCIMAGE \
+    python3 -m noisecls.eval \
+        --data /app/data/processed/esc50-5s-test.csv \
+        -bs 5 \
+        -exp "my-exp" \
+        --run-id 1 \
+        --comment "some-test" \
+        --clearml
+```
+Parameters
 
 <code> --config /path/to/config.yaml </code> </br>
 *main config YAML for this project* </br>
@@ -33,7 +47,7 @@ Parametres
 <code> --experiment my_first_experiment </code> </br>
 *name of experiment. This name is experiment dir and also in manager if it's used. For example (augmentation)*
 
-<code>  --train-run 1 </code> </br>
+<code>  --run-id 1 </code> </br>
 *Optional reference to train run. It means that config will be loaded from this train experiment*
 
 <code> --clearml </code> </br>
@@ -53,16 +67,25 @@ How to
 -------------
 
 * #### Add step metrics </br>
-*Add metrics which calculated for each test batch to `config:test:step_metrics` list according to valid list in `torchproject/metrics.py`*
+*Add metrics which will be calculated for each test batch to `config:test:step_metrics` either from list in `noisecls/metrics.py` or losses*
 ```python
-METRICS = ["TP", "FN", "FP", "TN", 
-           "acc", "recall", "precision", 
-           "conf_matrix",
-]
+# metrics that can be computed on each step 
+# they are based on confusion matrix
+CM_METRICS = ["conf_matrix",
+              "TP", "FN", "FP", "TN", 
+              "acc", "recall", "precision" 
+               ]
+# metrics that are defined for particular class
+CLASS_METRICS = ["TP", "FN", "FP", "TN",
+                 "recall", "precision"
+                 ]
+# plots based on probs (not preds) and targets
+# not able for step metrics
+PLOTS = ["PR-curve", "ROC-curve"]
 ```
 
 * #### Add summary metrics </br>
-*Add metrics which calculated for whole test set to `config:test:sum_metrics` list according to valid list in `torchproject/metrics.py`*
+*Add metrics which will be calculated for whole test set to `config:test:sum_metrics` according to way above*
 ```python
 METRICS = ["TP", "FN", "FP", "TN", 
            "acc", "recall", "precision", 

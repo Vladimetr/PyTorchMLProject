@@ -1,0 +1,16 @@
+# cu11.4
+# python 3.8.11
+# --index-url https://download.pytorch.org/whl/cu118
+# torch==2.1.1  
+# torchaudio==2.1.1  
+clearml
+scikit-learn
+transformers
+torchlibrosa
+glob2
+tqdm
+pyyaml
+oyaml
+matplotlib
+pandas
+optuna

@@ -1,0 +1,26 @@
+[
+    {
+        "name": "hparams/train/mixup",
+        "values": [100]
+    },
+
+    {
+        "name": "hparams/train/learning_rate",
+        "values": [0.00006, 0.006]
+    },
+
+    {
+        "name": "hparams/train/opt",
+        "values": ["SGD", "Adam"]
+    },
+
+    {
+        "name": "Args/batch_size",
+        "values": [10, 50, 100]
+    },
+
+    {
+        "name": "hparams/train/use_lr_sch",
+        "values": [true, false]
+    }
+]

@@ -1,15 +1,29 @@
 from clearml import Task, Logger, TaskTypes, Dataset
 from typing import Union, List, Optional
+import os
 import torch
 import numpy as np
 from sklearn import metrics
 from .. import PROJECT_NAME
-from ..utils import get_version_from_path
+from .. import utils
+
+"""
+NOTE
+in case of failed Dataset.get(dataset_id=ds_id) -> Connection refused
+
+/home/v.kochetkov/.local/lib/python3.8/site-packages/clearml/datasets/dataset.py
+#line:1637
+old URL must be replaced with new one
+
+I haven't found any alternatives
+"""
 
 matrix = Union[np.ndarray, torch.Tensor]
 
+DATA_MOUNTS = ("/mnt/raid10/datasets/projects/noise_classification/", "/data/")
+
 class ClearMLManager:
-    def __init__(self, key_token:str, secret_token:str, 
+    def __init__(self, 
                  subproject:bool=False,  # experiment format
                  experiment='noname', 
                  run_name:str="noname",
@@ -23,7 +37,14 @@ class ClearMLManager:
         resume (bool): whether to resume given run_name.
             If False and run_name exists, overwrite it
         """
+        # credentials
+        key_token = "R5V25ELMF8K44HN6ZDP8"  #os.getenv("CLEARML_KEY_TOKEN")
+        secret_token = "QJPm5a8Ef4L7Ag5QRuemh93RFEXHSdXaxnkwhM0dRwa0mtf9qE" # os.getenv("CLEARML_SEC_TOKEN")
+        if not (key_token and secret_token):
+            raise Exception('"CLEARML_KEY_TOKEN" and "CLEARML_SEC_TOKEN" '\
+                            'must be defined in env')
         Task.set_credentials(key=key_token, secret=secret_token)
+        
         task_type = TaskTypes.training if train else TaskTypes.testing
         if subproject:
             project_name = PROJECT_NAME + '/' + experiment
@@ -41,6 +62,8 @@ class ClearMLManager:
                                  task_name=task_name, 
                                  task_type=task_type,
                                  auto_connect_frameworks=False,
+                                 auto_resource_monitoring=False, 
+                                 auto_connect_streams=True,
                                  continue_last_task=tasks[0].task_id)
             # iteration will be continued
         else:
@@ -48,9 +71,12 @@ class ClearMLManager:
             self.task = Task.init(project_name=project_name, 
                                 task_name=task_name, 
                                 task_type=task_type,
-                                auto_connect_frameworks=False)
+                                auto_connect_frameworks=False,
+                                auto_resource_monitoring=False, 
+                                auto_connect_streams=True)
             self.task.rename(task_name)  # if it was renamed
             self.task.set_initial_iteration(1)
+            self._set_docker_info()
 
         # Turn off auto saveing ML models and other artifacts
         self.logger = Logger.current_logger()
@@ -58,6 +84,17 @@ class ClearMLManager:
         self.add_tags(tags)
         self.resume = resume
         print(f"ClearML experiment: '{project_name}/{task_name}'")
+
+    def _set_docker_info(self):
+        """
+        These info is used for running in ClearML agent
+        """
+        docker_args = "-v|/mnt:/mnt|-v|/mnt/nvme/vovik/noise_classification/:/app/|-v|/mnt/raid10/datasets/projects/noise_classification/:/data|-w|/app/|--user|1018:1018" # os.getenv("DOC_ARGS")
+        docker_image = "noise-cls:agent"  # os.getenv("AGENT_DOCIMAGE")
+        self.task.set_base_docker(
+            docker_arguments=docker_args.replace("|", " "),
+            docker_image=docker_image,
+        )
 
     def _validate_conf_matrix(self, conf_matrix:matrix, 
                               classes:List[str]):
@@ -122,13 +159,16 @@ class ClearMLManager:
         self.task.set_configuration_object(name='meta.yaml', 
                                            config_dict=metadata)
 
-    def log_step_metrics(self, metrics: dict, step: int):
+    def log_step_metrics(self, metrics: dict, step: int, prefix:str=None):
         """
         Log epoch metrics or test step metrics for plot
         NOTE: Don't log a lot of metrics (more than 200 per experiment),
         because it can slow down UI
         NOTE: Loss can be stored in metrics dict with key "*Loss"
         (for ex. "CrossEntropyLoss")
+        NOTE: initial step must be 0 
+        for either new experiment or resumed one
+        Clearml append new values itself.
         Args:
             step (int): initital step is 0
         """
@@ -139,6 +179,8 @@ class ClearMLManager:
             if 'Loss' in metric_name:
                 title = 'Loss'
                 metric_name = metric_name.replace('Loss', '')
+            if prefix:
+                metric_name = prefix + "_" + metric_name
             self.logger.report_scalar(
                 title=title, 
                 series=metric_name, 
@@ -169,7 +211,7 @@ class ClearMLManager:
     def log_confusion_matrix(self, conf_matrix: matrix, 
                              classes:List[str]=None, 
                              title:str='Confusion matrix',
-                             step:int=None):
+                             normalize=False):
         """
         Some managers support logging confusion matrix
         NOTE: xaxis="target" and yaxis="predict"
@@ -179,15 +221,33 @@ class ClearMLManager:
             classes = list(map(str, range(n_classes)))
         # validate input
         self._validate_conf_matrix(conf_matrix, classes)
-        step = step or self.max_step
         if isinstance(conf_matrix, torch.Tensor):
             conf_matrix = conf_matrix.numpy()
         self.logger.report_confusion_matrix(
                     title, "ignored", 
-                    iteration=step, matrix=conf_matrix,
+                    iteration=self.max_step, matrix=conf_matrix,
                     xlabels=classes, ylabels=classes,
                     xaxis="target", yaxis="predict"
         )
+
+        if not normalize:
+            return
+        
+        # normalize by: row (pred), column(targ), all (pred&targ)
+        norm_by = (
+            ("row", "pred"),
+            ("col", "targ"),
+            # ("all", "pred & targ")
+        )
+        for by, name in norm_by:
+            normed = utils.normalize_confusion_matrix(conf_matrix, by)
+            self.logger.report_confusion_matrix(
+                        f"{title} normed by {name}", 
+                        "ignored", 
+                        iteration=self.max_step, matrix=normed,
+                        xlabels=classes, ylabels=classes,
+                        xaxis="target", yaxis="predict"
+            )
 
     def plot_roc_curve(self, 
                   preds:Union[torch.Tensor, np.ndarray], 
@@ -322,8 +382,12 @@ class ClearMLDataset:
     def create(cls, data:str,
                version:str=None,
                previous:Optional[List[str]]=None,
-               tags:Optional[List[str]]=None,
-               description:Optional[str]=None):
+               tags:Optional[List[str]]=[],
+               description:Optional[str]=None,
+               sample_dur:Optional[float]=None,               
+               data_size:Optional[int]=None,
+               n_classes:Optional[int]=None,
+               **kwargs):
         """
         Create new dataset with given version
         Args:
@@ -335,6 +399,11 @@ class ClearMLDataset:
             previous (list[str]): parent IDs
             description (str): may refer to transformation 
                 for example 'balancing'
+            sample_dur (float): duration in sec of one sample (raw)
+            data_size (int): number of samples in dataset. If defined, 
+                add tag like "123k"
+            n_classes (int): number of classes in dataset. If defined, 
+                add tag like "50cls"
         Returns:
             ClearmlDataset
         """
@@ -342,7 +411,17 @@ class ClearMLDataset:
             raise TypeError("'previous' must be list of IDs")
         if not version:
             # get version from data path
-            version = get_version_from_path(data)
+            version = utils.get_version_from_path(data)
+
+        # tags
+        tags = tags or []
+        if data_size:
+            # TODO expand to '', 'k', 'm'
+            tags.append(str(round(data_size / 1000)) + "k")
+        if n_classes:
+            tags.append(str(n_classes) + "cls")
+        if sample_dur:
+            tags.append(str(round(sample_dur, 1)) + "sec")
 
         # to connect git info task needs to be defined
         Task.init(project_name=cls.__project_name, 
@@ -357,7 +436,11 @@ class ClearMLDataset:
                     description=description,
                     dataset_tags=tags,
                     use_current_task=True)
-        dataset._task.set_user_properties(data=data)
+        dataset._task.set_user_properties(data=data, 
+                                          data_size=data_size, 
+                                          n_classes=n_classes, 
+                                          sample_dur=sample_dur, 
+                                          **kwargs)
         return cls(dataset)
 
     @classmethod
@@ -391,6 +474,37 @@ class ClearMLDataset:
         return cls(dataset)
     
     @classmethod
+    def get_by_data(cls, data:str):
+        """
+        Get dataset with given version or given ID
+        Args:
+            data (str): /path/to/data
+        NOTE: data is one of dataset property (key "data")
+        Returns:
+            ClearmlDataset
+            None: if not found
+        """
+        data1 = data
+        # mounted dir
+        if data.startswith(DATA_MOUNTS[0]):
+            data2 = data.replace(DATA_MOUNTS[0], DATA_MOUNTS[1])
+        else:
+            data2 = data.replace(DATA_MOUNTS[1], DATA_MOUNTS[0])
+
+        datasets: List[dict] = Dataset.list_datasets(cls.__project_name, 
+                                                     cls.__dataset_name)
+        for ds in datasets:
+            ds_id = ds["id"]
+            dataset = Dataset.get(dataset_id=ds_id)
+            ds_data = dataset._task.get_user_properties()["data"]["value"]
+            if data1 == ds_data:
+                return cls(dataset)
+            if data2 == ds_data:
+                return cls(dataset)
+        # does not exist
+        return
+
+    @classmethod
     def get_all(cls):
         """
         Get all datasets in given project
@@ -402,6 +516,9 @@ class ClearMLDataset:
         ids = [ds["id"] for ds in datasets]
         return ids
     
+    def add_tags(self, tags:List[str]):
+        self.dataset._task.add_tags(tags)
+
     def add_metadata(self, datasize:int, **kwargs):
         """
         Metadata are visualized in 
@@ -431,16 +548,64 @@ class ClearMLDataset:
     def get_data(self) -> str:
         data = self.get_data("data")
         return data
-
+    
     def add_text(self, text:str, print=False):
         self.logger.report_text(text, print_console=print)
 
-    def add_histogram(self, data, 
-                      name:str='Histogram', 
+    def add_classes(self, classes:Union[str, List[str]]):
+        if not isinstance(classes, str):
+            fpath = "/tmp/classes.txt"
+            with open(fpath, 'w') as f:
+                for c in classes:
+                    f.write(str(c) + '\n')
+            classes = fpath
+        self.dataset._task.connect_configuration(classes, name="classes")
+
+    def upload_file(self, fpath:str, name:str):
+        self.dataset._task.connect_configuration(fpath, name=name)    
+
+    def upload_dict(self, data:dict, name:str):
+        self.dataset._task.connect_configuration(data, name=name)    
+
+    def add_histogram(self, data, bins:int,
+                      name:str="Histogram",
                       series:str='data', 
                       xtitle:str='x',
-                      ytitle:str='y'):
+                      ytitle:str='count'):
         """
+        Plot histogram from given data
+        Args:
+            data (np.ndarray): 1-D array
+            bins (int): number of columns with equal range
+            name (str): name of histogram
+            series (str): name of series
+            NOTE: multiple histograms with same 'name'
+            are plotted together with different 'series'
+        """
+        bins = list(range(20)) + [1000]
+        counts, ranges = np.histogram(data, bins)
+        ranges = list(map(str, ranges[ :-1]))
+        self.logger.report_histogram(name,
+                                     series,
+                                     values=counts,
+                                     xaxis=xtitle,
+                                     yaxis=ytitle,
+                                     xlabels=ranges)
+        
+    def add_bar(self, data, 
+                      name:str='Bar', 
+                      series:str='data', 
+                      xtitle:str='x',
+                      ytitle:str='y',
+                      labels=None):
+        """
+        Plot bar for each value in array
+        NOTE: number of columns = number of values in array
+        For example [1, 3, 2, 5]
+        - 1st column has height 1
+        - 2nd column has height 3
+        - 3rd column has height 2
+        - 4th column has height 5
         Args:
             data (np.ndarray): 1-D array
             name (str): name of histogram
@@ -452,7 +617,8 @@ class ClearMLDataset:
                                      series,
                                      values=data,
                                      xaxis=xtitle,
-                                     yaxis=ytitle)
+                                     yaxis=ytitle,
+                                     xlabels=labels)
 
     def add_pd_table(self, data,
                      name:str='Table', 
@@ -494,28 +660,70 @@ class ClearMLDataset:
                 extra_layout=extra_layout
         )
 
+    def add_example(self, fpath:str, 
+                    name:Optional[str]='example'):
+        """
+        Add some media file as an example. It can be viewed in
+        Task information -> Debug samples
+        NOTE: Don't add large files
+        Args:
+            fpath (str): /path/to/file
+        """
+        self.logger.report_media(title='examples', 
+                                 series=name,
+                                 local_path=fpath,
+                                 stream=None,
+                                 delete_after_upload=False)
+
     def commit(self):
         self.dataset.finalize()
+        self.dataset._task.close()
+        print("Dataset is logged to ClearML.", flush=True)
 
 
 if __name__ == '__main__':
+    task = Task.get_task("46d348ee509a499a88a1a5021c8500bf")
+
+    print(type(task.get_status()))
+    print(task.get_parameters_as_dict())
+
+    exit()
+    
+    
     params = {
-        'key_token': 'R5V25ELMF8K44HN6ZDP8',
-        'secret_token': 'QJPm5a8Ef4L7Ag5QRuemh93RFEXHSdXaxnkwhM0dRwa0mtf9qE',
         'subproject': True  # experiment format
     }
-    experiment = 'experiment'
-    run_name = 'test'
-    manager = ClearMLManager(**params, experiment='vova', run_name='test11')
 
-    manager.logger.report_scatter2d(
-        title='graph',
-        series="auc",
-        scatter=np.array([[0.60, 0.84]]),
-        labels=['thresh=0.48 auc=0.74'],
-        mode='markers'
-    )
+
+    experiment = 'vova'
+    run_name = 'test'
+    resume = False
+    manager = ClearMLManager(**params, experiment=experiment, run_name=run_name, resume=resume)
+    a = manager.logger.get_flush_period()
+    print(a)
     exit()
+
+
+    manager.log_config("classes/join-classes_arca23.v2.json")
+
+    # conf_matrix = np.load("/mnt/nvme/vovik/noise_classification/conf_matrix.npy")
+
+    # manager.log_confusion_matrix(conf_matrix, normalize=True)
+
+    exit()
+
+
+    
+    values = [3.4, 3.2]
+    steps = [0, 1]
+    for v, step in zip(values, steps):
+        metrics_ = {
+            "loss": v
+        }
+        manager.log_step_metrics(metrics_, step=step)
+
+    exit()
+
 
     # pr, rec = 0.8932, 0.9260
     # manager.log_summary_metrics({

@@ -1,4 +1,5 @@
-FROM python:3.11.6
+FROM jupyter/datascience-notebook
+# python 3.11.6
 
 USER root
 
@@ -8,16 +9,18 @@ COPY requirements.txt requirements.txt
 RUN pip install -r requirements.txt
 
 RUN useradd -m v.kochetkov --uid=1018 -U -s /bin/bash
-RUN useradd -m user --uid=1000 -U -s /bin/bash
 # -m create home dir /home/v.kochetkov
 # -U create same groupID and set user to this group
 
 # -> cat /etc/passwd
 # vova:x:1018:1018::/home/vova:/bin/sh
 
+RUN chown v.kochetkov:1018 -R /home/jovyan
+
 USER v.kochetkov:1018
+# Permission denied: '/home/jovyan/.local'
 
 # mount this working dir
 WORKDIR /app
 
-CMD ["/bin/bash"]
+CMD ["jupyter", "notebook", "--NotebookApp.token", "kochetkover"]

@@ -5,7 +5,7 @@ from typing import Union, Tuple
 import argparse
 from math import isnan
 from torch import Tensor
-from .data import CudaDataLoader, BucketingSampler, AntispoofDataset
+from .data import CudaDataLoader, BucketingSampler, NoiseClassificationDataset
 from . import utils
 from .utils.manager import ClearMLManager
 from .models import init_model, BaseModel
@@ -41,7 +41,7 @@ def get_train_run(experiment:str, run_id:int) -> Union[str, None]:
 def get_test_run(experiment:str, train_run_id:int=None) -> str:
     """
     Get test experiment run with reference to train RunID (opt)
-    NOTE: if 'train_run_id' is not None, it must be existed
+    NOTE: if 'train_run_id' is not None, it must exist
     Returns:
         str: new test run name
     """
@@ -66,8 +66,6 @@ def test_step(
         batch:Tuple[Tensor, Tensor],
         metrics_computer:ClassificationMetrics,
         loss_computer:Loss=None,
-        accumulate_preds=False,
-        accumulate_probs=False,
         ) -> dict:
     """
     accumulate_preds (bool): whether to accumulate
@@ -81,10 +79,6 @@ def test_step(
     # logits - before activation (for loss)
     # probs - after activation   (for acc)
         
-    # Metrics computing
-    metrics = metrics_computer.compute(probs.cpu(), target.cpu(),
-                                       accumulate_preds=accumulate_preds,
-                                       accumulate_probs=accumulate_probs)
     # CrossEntropy loss
     if loss_computer:
         loss, loss_values = loss_computer(logits, target)
@@ -93,12 +87,16 @@ def test_step(
             any([isnan(v) for v in loss_values.values()]):
             message = f"Loss is NaN"
             raise Exception(message)
-        metrics.update(loss_values)
+        
+    # Metrics computing
+    metrics = metrics_computer.step_metrics(probs.cpu(), target.cpu(),
+                                            add_summary=True,
+                                            precomputed=loss_values)
     
     return metrics
 
 
-def test(data:str,
+def eval(data:str,
          config:Union[str, dict]='config.yaml',
          batch_size:int=500,
          gpu_id:int=0,
@@ -123,7 +121,7 @@ def test(data:str,
             given weights or 'best.pt' within run_id 
         else:
             /path/to/weights.pt
-            If None, weights will be loaded from config:test:weights
+            If None, weights will be loaded from config:eval:weights
     clearml (bool): whether to manage experiment with ClearML
     data_shuffle (bool): whether to shuffle data
     log_step (int): interval of loggoing step metrics
@@ -132,7 +130,7 @@ def test(data:str,
         for faster batch generation
     """
     experiment = experiment.lower().replace(' ', '_')
-    logger, run_dir, manager = None, None, None
+    logger, run_dir, manager, summary_file = None, None, None, None
     hparams = dict()
 
     # Validate device
@@ -163,14 +161,17 @@ def test(data:str,
         config = dict(config)  # copy
 
     if not no_save:
-        # Define test Run name
-        run_name = get_test_run(experiment, run_id)
+        exp_dir =  os.path.join(EXPERIMENTS_DIR, experiment, "test")
+        # Define eval Run name
+        tmplt = "\d{2}"
+        if run_id:
+            tmplt = f"{run_id:03d}-" + tmplt
+        run_name = utils.get_next_exprun(exp_dir, tmplt)
         if comment:
             run_name += '_' + comment
             
         # Create storage
-        run_dir = os.path.join(EXPERIMENTS_DIR, experiment,
-                            'test', run_name)
+        run_dir = os.path.join(exp_dir, run_name)
         os.makedirs(run_dir)
 
         # Init manager
@@ -186,9 +187,14 @@ def test(data:str,
             config_yaml = manager.log_config(config_yaml)
             config = utils.config_from_yaml(config_yaml)
             # log and update hparams if it was changed
+            # Hyperparams
             hparams = config["manager"]["hparams"]
             hparams = manager.log_hyperparams(hparams)  
-            print(f"Manager experiment run name: {'train-' + run_name}")
+            # overwrite config params
+            utils.overwrite_hparams(config, hparams)
+            print("Hyperparams:")
+            utils.pprint_dict(hparams)
+            print(f"Manager experiment run name: {'test-' + run_name}")
 
         # save config
         config_yaml = osp.join(run_dir, 'config.yaml')
@@ -196,12 +202,11 @@ def test(data:str,
         # init files for log metrics
         logfile = osp.join(run_dir, 'test.csv')
         logger = utils.get_logger('test', logfile)
+        summary_file = osp.join(run_dir, "summary.txt")
         print(f"Experiment storage: '{run_dir}'")
 
-    # Hyperparams overwrite config params
-    utils.update_given_keys(config, hparams)
-    params : dict = config["test"]
-    classes = config["classes"]
+    params : dict = config["eval"]
+    classes = utils.read_classes(config["classes"])
     model_cfg = config["model"]
     sr = config["sr"]
     weights = weights or params.get("weights")
@@ -209,7 +214,7 @@ def test(data:str,
         raise ValueError("Model weights must be defined")
 
     # Load test data
-    test_set = AntispoofDataset(data, classes=classes,
+    test_set = NoiseClassificationDataset(data, classes=classes,
                                 sr=sr, cache_size=cache_size,
                                 preprocess_cfg=config["preprocess"])
     data_size = len(test_set)
@@ -219,6 +224,7 @@ def test(data:str,
                               pin_memory=True, num_workers=4,
                               batch_sampler=sampler)
     test_steps = len(test_set)  # number of test batches
+    test_set.shuffle(15)
 
     # Add specific info
     if manager:
@@ -243,10 +249,12 @@ def test(data:str,
             manager.log_metadata(metadata)
 
     # Define model
-    model = init_model(model_cfg,
+    model = init_model(n_classes=len(classes),
+                       model_cfg=model_cfg,  
                        weights=weights,
                        training=False,
                        device=device)
+    model.eval()
     
     # Define loss
     loss = init_loss(config["loss"], device=device)
@@ -254,38 +262,40 @@ def test(data:str,
     # Init test metrics computer
     metrics_computer = ClassificationMetrics(
                                 classes=classes,
-                                metrics=params["step_metrics"],
+                                step_metrics=params["step_metrics"],
+                                summary_metrics=params["sum_metrics"],
                                 step=True, epoch=False,
                                 logger=logger)
 
-    test_set.shuffle(15)
+    # progress bar
+    if not no_save:
+        test_set = utils.get_progress_bar(test_set, total=test_steps)
+
+    # Start test steps
     for step, batch in enumerate(test_set):
         metrics = test_step(
             model=model,
             batch=batch,
             loss_computer=loss,
             metrics_computer=metrics_computer,
-            accumulate_preds=params["plot_conf_matrix"],
-            accumulate_probs=params["plot_roc"] or params["plot_pr"],
         )
         if (step + 1) % log_step == 0:
             metrics_computer.log_metrics(metrics, step=step+1)
             if manager:
-                manager.log_step_metrics(metrics, step=step+1)
+                manager.log_step_metrics(metrics, step=step)
 
-    sum_metrics = metrics_computer.summary(params["sum_metrics"])
+    sum_metrics = metrics_computer.get_summary()
     print("\n--- Summary metrics ---")
-    metrics_computer.pprint(sum_metrics, line=False)
-    # Print summary conf matrix
-    conf_matrix = metrics_computer.sum_conf_matrix
-    metrics_computer.pprint_conf_matrix(conf_matrix)
-    
+    metrics_computer.pprint(sum_metrics, line=False, with_conf_matrix=True,
+                            duplicate_file=summary_file)
+
     if manager:
-        sum_metrics.pop("conf_matrix", None)
+        conf_matrix = sum_metrics.pop("conf_matrix", None)
         manager.log_summary_metrics(sum_metrics)
-        if params["plot_conf_matrix"]:
+        if conf_matrix is not None:
             manager.log_confusion_matrix(conf_matrix, 
-                                         classes=classes)
+                                         classes=classes,
+                                         normalize=params["norm_conf_matrix"])
         if params["plot_roc"]:
             for cls in classes:
                 metrics_computer.plot_roc(cls, manager)
@@ -314,12 +324,12 @@ if __name__ == '__main__':
                         default=False, 
                         help='no save results')
     parser.add_argument('--experiment', '-exp', default='experiment', 
-                    help='experiment name')
+                        help='experiment name')
     parser.add_argument('--run-id', '-r', type=int, default=None,
                     help='train RunID for reference')
     parser.add_argument('--weights', '-w', type=str,
                         default='best.pt', 
-                    help='Weights name for loading from this run')
+                        help='Weights name for loading from this run')
     parser.add_argument('--clearml', action='store_true', 
                         default=False, 
                         help='whether to use ClearML for experiment manager')
@@ -331,4 +341,4 @@ if __name__ == '__main__':
     # Namespace to dict
     args = vars(args)
 
-    test(**args)
+    eval(**args)

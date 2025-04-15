@@ -1,6 +1,6 @@
-from typing import Tuple
+from typing import Tuple, List
 from abc import ABCMeta, abstractmethod
-# import pandas as pd
+import pandas as pd
 import torch
 from torch import Tensor
 from ..preprocess import init_preprocessor
@@ -12,6 +12,7 @@ class BaseModel(torch.nn.Module,
                  n_classes:int=2,
                  preprocess_cfg:dict=None,
                  device:str="cpu",
+                 training:bool=False
                  ):
         super(BaseModel, self).__init__()
         self.n_classes = n_classes
@@ -21,6 +22,8 @@ class BaseModel(torch.nn.Module,
             self.preprocessor = init_preprocessor(preprocess_cfg)
         else:
             self.preprocessor = None
+        self.accumulated_grads: List[dict] = []
+        self.train() if training else self.eval()
 
     def to(self, device:str) -> None:
         if self.preprocessor is None:
@@ -41,6 +44,45 @@ class BaseModel(torch.nn.Module,
         if self.preprocessor is None:
             return x
         return self.preprocessor(x)
+    
+    @abstractmethod
+    def before_mixup(self, x:Tensor):
+        """
+        B - batch size
+        F - feature dim
+        T - time dim
+        It's able to use mixup method during the train
+        So forward method splits on 
+        steps before mixup
+        and model steps after mixup
+        https://github.com/fschmid56/EfficientAT/blob/a425fdce92572e602a1d5634799bd9f1f2efa806/ex_esc50.py#L103
+        If your model doesn't support mixup
+        raise NotImplementedError
+        Args:
+            features (B, F, T): input features (already preprocessed)
+            or
+            samples (B, 1, S): raw samples (preprocess required)
+        """
+        pass
+
+    @abstractmethod
+    def after_mixup(self, x:Tensor) -> Tuple[Tensor, Tensor]:
+        """
+        B - batch size
+        C - n classes
+        It's able to use mixup method during the train
+        So forward method splits on 
+        steps before mixup
+        and model steps after mixup
+        https://github.com/fschmid56/EfficientAT/blob/a425fdce92572e602a1d5634799bd9f1f2efa806/ex_esc50.py#L103
+        If your model doesn't support mixup
+        raise NotImplementedError
+        Returns:
+            tuple
+              (B, C): output logits
+              (B, C): output probs (output of softmax)
+        """
+        pass
 
     @abstractmethod
     def forward(self, x:Tensor) -> Tuple[Tensor, Tensor]:
@@ -60,11 +102,12 @@ class BaseModel(torch.nn.Module,
         """
         pass
 
-    def get_num_params(self):
+    def get_num_params(self, only_trainable=False):
         total_n = 0
-        for name, p in self.named_parameters():
-            # print(name, n)
-            assert p.requires_grad
+        params = self.parameters()
+        if only_trainable:
+            params = filter(lambda x: x.requires_grad, params)
+        for p in params:
             n = p.numel()            
             total_n += n
         return total_n
@@ -77,8 +120,9 @@ class BaseModel(torch.nn.Module,
             Exception: "Grad of '{LAYER}' is NaN
             Exception: "Grads not defined. Use backward() before"
         """
-        for name, param in self.named_parameters():
-            # print(name)
+        trainable_params = filter(lambda p: p[1].requires_grad,
+                                  self.named_parameters())
+        for name, param in trainable_params:
             try:
                 grads = param.grad.data
             except AttributeError:
@@ -95,8 +139,9 @@ class BaseModel(torch.nn.Module,
             dict: {'layer.name': ( mean(float), std(float) ) }
         """
         name_grads = dict()
-        for name, param in self.named_parameters():
-            assert param.requires_grad
+        trainable_params = filter(lambda p: p[1].requires_grad,
+                                  self.named_parameters())
+        for name, param in trainable_params:
             try:
                 grads = param.grad.data
             except AttributeError:
@@ -118,7 +163,7 @@ class BaseModel(torch.nn.Module,
         |--step--|--layer.name/mean--|--layer.name/std--|
         """
         data = []  # dicts
-        for step_grads in self.accumulated_grads.items():
+        for step_grads in self.accumulated_grads:
             new_step_grads = dict()
             for name, (mean, std) in step_grads.items():
                 new_step_grads[name + '/mean'] = mean

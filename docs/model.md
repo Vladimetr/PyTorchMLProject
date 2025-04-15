@@ -1,7 +1,7 @@
 MODEL
 ===========
 
-Each model can be represented as following `torchproject/models/base.py`:
+Each model can be represented as following `noisecls/models/base.py`:
 ```python
 class BaseModel(torch.nn.Module,
                 metaclass=ABCMeta):
@@ -43,7 +43,7 @@ class BaseModel(torch.nn.Module,
 ### How to define new model
 -----------
 1. In order to add new model create new class by inheriting from `BaseModel`. Dont't forget to define required methods according to described API. 
-2. Add initialization to `torchproject/models/__init__.py`
+2. Add initialization to `noisecls/models/__init__.py`
 ```python
 preprocess_cfg = model_cfg.pop("preprocess", None)
 name = next(iter(model_cfg))

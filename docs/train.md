@@ -7,13 +7,30 @@ All neccessary info is stored in dir and manager:
 - meta.yaml;
 - train.csv;    *# step metrics on train data*
 - test.csv;     *# step metrics on test data*
+- summary.txt;  *# summary metrics*
 
 See example in `dev/experiments/experiment/train/001/` </br>
 
 > Files above allow to reproduce train experiment, e.g. re-run it on new data
 
+Run
+-----------
+see `docker/train.sh`
+```bash
+docker run -d \
+    ...
+    $RUN_DOCIMAGE \
+    python3 -m noisecls.train \
+        --train-data /app/data/processed/esc50-5s-train.csv \
+        --test-data /app/data/processed/esc50-5s-test.csv \
+        -bs 5 \
+        --epochs 8 \
+        -exp my-exp \
+        --comment "description" \
+        --clearml
+```
+
 Parametres
-----------
 
 <code> --config /path/to/config.yaml </code> </br>
 *main config YAML for this project* </br>
@@ -52,12 +69,21 @@ How to
 -------------
 
 * #### Add metrics </br>
-*Add metrics to `config:train:metrics` list according to valid list in `torchproject/metrics.py`*
+*Add metrics to `config:train:metrics` either from list in `noisecls/metrics.py` or losses*
 ```python
-METRICS = ["TP", "FN", "FP", "TN", 
-           "acc", "recall", "precision", 
-           "conf_matrix",
-]
+# metrics that can be computed on each step 
+# they are based on confusion matrix
+CM_METRICS = ["conf_matrix",
+              "TP", "FN", "FP", "TN", 
+              "acc", "recall", "precision" 
+               ]
+# metrics that are defined for particular class
+CLASS_METRICS = ["TP", "FN", "FP", "TN",
+                 "recall", "precision"
+                 ]
+# plots based on probs (not preds) and targets
+# not able for step metrics
+PLOTS = ["PR-curve", "ROC-curve"]
 ```
 
 * #### Add optimizer </br>
@@ -76,7 +102,9 @@ else:
 *And set new name in `config:train:optimizer`*
 
 * #### Add loss function </br>
-*It's able to define another torch loss fucntion in `torchproject/metrics.py`.*
+*It's able to define another torch loss fucntion in `noisecls/metrics.py`.*</br>
+*Note that name must ends with `*Loss`* </br>
+*And set new name in `config:train:loss`*
 ```python
 class Loss(metaclass=ABCMeta):
     """ Abstract Loss """
@@ -146,4 +174,4 @@ def init_loss(loss_cfg:dict,
         raise ValueError(f"Invalid loss params {params}")
     return loss
 ```
-*And set new name in `config:train:loss`*
+

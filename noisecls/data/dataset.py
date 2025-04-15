@@ -1,21 +1,23 @@
 """
 Data batching for train and test
 """
-from typing import Union, List, Tuple
+from typing import List
+import os.path as osp
 import numpy as np
 import pandas as pd
 import random
 import sys
-from collections import OrderedDict
+from tqdm import tqdm
 import torch
 from torch import Tensor
 from torch.utils.data import Dataset
 from torch.utils.data import DataLoader
 from torch.utils.data.sampler import Sampler
-from ..preprocess import init_preprocessor, load_audio
+from ..preprocess import init_preprocessor
 from .. import utils
 
-CSV_SEP = ' '
+SR = 16000
+CSV_SEP = ","
 
 
 class CudaDataLoader(DataLoader):
@@ -91,9 +93,9 @@ class BucketingSampler(Sampler):
             np.random.RandomState(epoch).shuffle(self.bins)
 
 
-class AntispoofDataset(Dataset):
+class NoiseClassificationDataset(Dataset):
     def __init__(self, data_path:str, classes:List[str], 
-                 sr:int=8000,
+                 sr:int=SR, normalize:bool=True,
                  preprocess_cfg:dict=None,
                  cache_size:int=0
                  ):
@@ -110,6 +112,7 @@ class AntispoofDataset(Dataset):
         data = pd.read_csv(data_path, sep=CSV_SEP)
         self.classes = classes
         self.n_classes = len(classes)
+        self.normalize = normalize
 
         if preprocess_cfg:
             preprocess_cfg = dict(preprocess_cfg)  # copy
@@ -143,7 +146,8 @@ class AntispoofDataset(Dataset):
         try:
             sample = self.cache_samples[audio_path]
         except KeyError:
-            sample, _ = load_audio(audio_path)
+            # torchaudio load
+            sample, _ = utils.load_audio(audio_path, self.normalize)
             # put in cache
             if len(self.cache_samples) > self.cache_size:
                 self.cache_samples.clear()
@@ -151,12 +155,15 @@ class AntispoofDataset(Dataset):
         # (1, S)
 
         # cut
-        x = sample[:1, int(self.sr * start) : int(self.sr * end)]
+        x = sample[:1, start : end]
         # (1, S')
+        x = torch.unsqueeze(x, 0)
+        # (B=1, 1, S)
 
         # preprocess
         if self.preprocessor:
             x = self.preprocessor(x)
+            # (B, F, T)
 
         # label (str) -> (int)
         try:
@@ -188,30 +195,84 @@ class AntispoofDataset(Dataset):
         """
         xs, ys = [], []
         for x, y in batch:
-            xs.append(x)  # (1, S)
+            xs.append(x)  # (1, 1, S) or (1, F, T)
             ys.append(y)  # int
             
-        xs = torch.stack(xs, dim=0)  # (B, 1, S)
+        xs = torch.cat(xs, dim=0)  # (B, 1, S)
         ys = torch.tensor(ys, dtype=torch.long)  # (B, )
         return xs, ys
+    
+
+def validate(manifest:str, dur:float, classes:List[str],
+             sr:int=SR):
+    """ Validation of manifest
+    - audios exist
+    - duration is equal to given
+    - class is valid
+    It's good to run it before training
+    Args:
+        manifest (str): /path/to/manifest.csv
+        dur (float): duration in sec of single classifed sample (row)
+        classes (List[str]): list of valid classes
+        sr (int): sample rate
+    """
+    # read data
+    data = pd.read_csv(manifest, sep=CSV_SEP)
+    if isinstance(classes, str):
+        # read classes from file
+        classes = utils.read_classes(classes)
+
+    prev_wavpath = None
+    dur = int(sr * dur)
+    for i in tqdm(range(len(data))):
+        wavpath, start, end, label = data.iloc[i]
+
+        # load audio
+        if wavpath != prev_wavpath:
+            sample, sr = utils.load_audio(wavpath)
+            assert sr == SR, wavpath
+            slen = sample.shape[1]
+            prev_wavpath = wavpath
+
+        assert end <= slen, f"row {i}"
+        assert end - start == dur, f"row {i}"
+
+        assert label in classes, f"label: '{label}', row {i}"
+
+    print("Data is OK")
 
 
 
 if __name__ == '__main__':
-    config = utils.config_from_yaml('config.yaml')
-    preprocess_cfg = config["preprocess"]
-    data_path = 'data/processed/train_manifest.v1.csv'
+    import argparse
+    parser = argparse.ArgumentParser(description='Dataset validation')
+    parser.add_argument('--config', '-cfg', type=str, 
+                        default="config.yaml",
+                        help='path/to/config.yaml')
+    parser.add_argument('--input', '-i', type=str, 
+                        required=True,
+                        help='path/to/input/data.csv')
+    args = parser.parse_args()
 
-    dataset = AntispoofDataset(data_path, classes=config["classes"], 
-                               preprocess_cfg=preprocess_cfg)
-    sampler = BucketingSampler(dataset, batch_size=2, shuffle=True)
-    dataset = CudaDataLoader(dataset=dataset, 
-                          collate_fn=dataset.collate, 
-                          batch_sampler=sampler,
-                          pin_memory=True,
-                          num_workers=1
-    )
-    for i, batch in enumerate(dataset):
-        x, label = batch
-        print(x.shape, label.shape)
+    validate(args.input, dur=5.0, classes="classes/fsd50.txt")
+    exit()
+
+    config = utils.config_from_yaml(args.config)
+    classes = utils.read_classes(config["classes"])
+    preprocess_cfg = config["preprocess"]
+
+    train_set = NoiseClassificationDataset(args.input, classes=classes,
+                                 sr=SR, cache_size=1000,
+                                 preprocess_cfg=preprocess_cfg)
+    sampler = BucketingSampler(train_set, 4,
+                               shuffle=False)
+    train_set = CudaDataLoader(0, train_set, 
+                               collate_fn=train_set.collate, 
+                               pin_memory=True, num_workers=8,
+                               batch_sampler=sampler)
+    
+    for i, batch in enumerate(train_set):
+        # i, x, y  
+        print(i, batch[0].shape, batch[1].shape)
+
     

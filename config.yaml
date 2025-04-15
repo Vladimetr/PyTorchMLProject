@@ -1,14 +1,17 @@
 # hint: use null for None variables
 
 # order is critical for model
-n_classes: &n_classes 2
-classes:
-  - fake
-  - real
-sr: &sr 8000
+classes: /app/classes/esc50.txt
+sr: &sr 32000
+dur: 2.0  # duration for classification (sec)
   
-# preprocess outside model
+# preprocess before model
 preprocess:
+  normalize: True  # audio normalization
+  # which one to use from options below (class name)
+  # or null if raw samples go to model
+  use: MobnetPreprocess
+
   LogmelPreprocess:  # class name
     sr: *sr
     wnd_step: 0.008
@@ -16,60 +19,129 @@ preprocess:
     nfilt: 40
     nfft: 512
 
+  ClapPreprocess: {}
+
+  MobnetPreprocess:
+    gain_augment: 12  # only for train
+
+
 model:
   # preprocess inside model
   preprocess: null
+  # which one to use from options below (class name)
+  use: DynMobnet
+
   TCNClassification:  # class name
-    n_classes: *n_classes
-    timesteps: 376            # T for 3 sec audio
+    timesteps: 626            # T for 5 sec audio
     in_channels: 40           # F
-    channels: [64, 32, 16]    # 3 TempBlocks
-    hidden_dim: 100
+    channels: [128, 64, 32, 16]    # 3 TempBlocks
+    hidden_dim: 256
     kernel_size: 5
     dropout: 0.1
+  
+  CLAPencoder:
+    # pre-trained CLAP encoder + class layer
+    version: "2023"
+    hid_dims: []
+    dropout: 0.1
+    freeze_encoder: True
+
+  CLAPmultimodal:
+    classes: /app/classes/esc50.txt
+
+  ResNext:
+    pretrained: "/app/references/AudioCLIP/assets/audioenc.pt"
+    hid_dims: [300, 100]
+    norm: False
+    dropout: 0.1
+    freeze_encoder: True
+
+  DynMobnet:
+    pretrained: "dymn10_as"
+    temp: 1.0
+
+
+train:
+  # for each train step (batch)
+  # print to console or to file.
+  # only scalars
+  step_metrics:
+    - acc
+    - CrossEntropyLoss
+
+  # for total train set
+  # saved to manager if it's used
+  sum_metrics:
+    - acc
+    - CrossEntropyLoss
+
+  pretrained: null
+  opt: &opt Adam
+  learning_rate: &lr 0.00006
+  weight_decay: 0.000
+  grad_norm: 1.0
+  momentum: 0.1
+  nesterov: True
+  mixup: &mixup 0.3
+  lr_scheduler:
+    use: &use_lr_sch True
+    warmup: 10
+    rd_start: 10   # ramp down start
+    rd_len: 65     # ramp down length
+    last_lr: 0.01  # last value of LR
+
+eval:
+  weights: null  # default weights
+  
+  # for each test step (batch)
+  # print to console or to file.
+  # only scalars
+  step_metrics:
+    - acc
+    - CrossEntropyLoss
+  
+  # for total eval set
+  # saved to manager if it's used
+  sum_metrics:
+    - acc
+    - CrossEntropyLoss
+  
+  # plots only for manager
+  plot_pr: False   # Precision-Recall curve
+  plot_roc: False  # ROC curve
+  norm_conf_matrix: True
 
 loss:
+  use: CrossEntropyLoss
+
   CrossEntropyLoss:   # class name
     weights: null     # null if equal
 
-train:
-  metrics:  # for each train step only scalars
-    - acc
-    - TP
-    - FN
-    - FP
-  pretrained: null
-  opt: &opt Adam
-  learning_rate: &lr 0.001
-  weight_decay: 0.005
-  grad_norm: 1.0
-
-
-test:
-  weights: null  # default weights
-  step_metrics:  # only scalars
-    - acc
-    - TP
-    - FN
-    - FP
-  # for total test set
-  sum_metrics:
-    - acc
-    - precision
-    - recall
-    - conf_matrix
-  # via manager
-  plot_conf_matrix: True
-  plot_pr: True   # Precision-Recall curve
-  plot_roc: True  # ROC curve
-
-
 manager:
   clearml:
-    key_token: R5V25ELMF8K44HN6ZDP8
-    secret_token: QJPm5a8Ef4L7Ag5QRuemh93RFEXHSdXaxnkwhM0dRwa0mtf9qE
     subproject: True  # experiment format
   hparams:
+    # they will overwrite values above
     train:
       learning_rate: *lr
       opt: *opt
+      mixup: *mixup
+      lr_scheduler:
+        use: *use_lr_sch
+
+hypertune:
+  alg: grid
+  # Loss/name, Metrics/name
+  objective:
+    - Loss/test_CrossEntropy
+  # min/max for every metric above
+  signs:
+    - min_global
+  concurency: 4
+  report_period: 3  # min
+  sampler:
+    # see docs/hypertune.md for more details
+    use: default  # or default (TPE)
+  pruner:
+    # see docs/hypertune.md for more details
+    use: default  # or default (Median)
