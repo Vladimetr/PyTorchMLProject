@@ -80,7 +80,7 @@ train:
   learning_rate: &lr 0.00006
   weight_decay: 0.000
   grad_norm: 1.0
-  momentum: 0.1
+  momentum: &momentum 0.1
   nesterov: True
   mixup: &mixup 0.3
   lr_scheduler:
@@ -126,12 +126,14 @@ manager:
       learning_rate: *lr
       opt: *opt
       mixup: *mixup
+      momentum: *momentum
       lr_scheduler:
         use: *use_lr_sch
 
 hypertune:
   alg: grid
   # Loss/name, Metrics/name
+  # name = train_{metric} or test_{metric}
   objective:
     - Loss/test_CrossEntropy
   # min/max for every metric above

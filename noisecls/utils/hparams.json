@@ -1,12 +1,12 @@
 [
     {
         "name": "hparams/train/mixup",
-        "values": [100]
+        "values": [0, 0.3, 0.5]
     },
 
     {
         "name": "hparams/train/learning_rate",
-        "values": [0.00006, 0.006]
+        "values": [0.00006, 0.006,  0.0006]
     },
 
     {
@@ -16,11 +16,11 @@
 
     {
         "name": "Args/batch_size",
-        "values": [10, 50, 100]
+        "values": [10, 50]
     },
 
     {
-        "name": "hparams/train/use_lr_sch",
+        "name": "hparams/train/lr_scheduler/use",
         "values": [true, false]
     }
 ]

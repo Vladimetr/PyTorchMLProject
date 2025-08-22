@@ -337,14 +337,14 @@ def clearml_hypertune(
     for exp in top_exp:
         print(exp.name)
 
+    # make sure background optimization stopped
+    optimizer.stop()
+
     # save result to json
     top10 = optimizer.get_top_experiments_details(10)
     json_path = osp.join(hop_dir, "summary.json")
     with open(json_path, 'w', encoding='utf-8') as f:
         json.dump(top10, f, ensure_ascii=False)
-
-    # make sure background optimization stopped
-    optimizer.stop()
 
 
 def optuna_hypertune(

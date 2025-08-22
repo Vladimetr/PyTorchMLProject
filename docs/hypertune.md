@@ -42,6 +42,8 @@ python3 -m noisecls.hypertune --base-task {ID} --hparams hparams.json --config c
 - **--queue/-q** - *queue name in ClearML*
 - **--comment/-m** - *optional comment for hpo experiment*
 
+#### ATTENTION!
+Several tasks will be executed. There are tasks from queue that worker executes and main HPO task that runs in (4). **All containers** must have permissions for saving to one folder in `{EXPERIMENTS_DIR}/hpo-X/`.
 
 #### Insufficient shared memory
 After running experiment an error can occur: `DataLoader worker (pid(s) 1501) exited unexpectedly`. Set additional docker arg (extra arg) `--shm-size=64gb` to the base task.

@@ -17,7 +17,7 @@ docker run -it --rm \
     -e CLEARML_SEC_TOKEN=$CLEARML_SEC_TOKEN \
     -e AGENT_DOCIMAGE=$AGENT_DOCIMAGE \
     -e DOC_ARGS=$DOC_ARGS \
-    --user $(id -u):$(id -g) \
+    --user $UID_:$GID_ \
     --gpus "device=$GPU_ID" \
     $RUN_DOCIMAGE \
         /bin/bash

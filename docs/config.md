@@ -104,8 +104,9 @@ manager:
 hypertune:
   alg: optuna
   # Loss/name, Metrics/name
+  # name = train_{metric} or test_{metric}
   objective:
-    - Loss/CrossEntropy
+    - Loss/test_CrossEntropy
   # min/max for every metric above
   signs:
     - min_global

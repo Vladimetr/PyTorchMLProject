@@ -89,8 +89,8 @@ class ClearMLManager:
         """
         These info is used for running in ClearML agent
         """
-        docker_args = "-v|/mnt:/mnt|-v|/mnt/nvme/vovik/noise_classification/:/app/|-v|/mnt/raid10/datasets/projects/noise_classification/:/data|-w|/app/|--user|1018:1018" # os.getenv("DOC_ARGS")
-        docker_image = "noise-cls:agent"  # os.getenv("AGENT_DOCIMAGE")
+        docker_args = os.getenv("DOC_ARGS")
+        docker_image = os.getenv("AGENT_DOCIMAGE")
         self.task.set_base_docker(
             docker_arguments=docker_args.replace("|", " "),
             docker_image=docker_image,
